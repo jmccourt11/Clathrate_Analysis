@@ -240,6 +240,29 @@ def get_bipyramid_geometry(shape_vertices=None, shape_color=None):
     color = 'rgba(150,150,250,0.6)'
     return vertices, faces, color
 
+def get_cube_geometry(center, size=0.2):
+    a = size / 2
+    vertices = np.array([
+        [-a, -a, -a],
+        [+a, -a, -a],
+        [+a, +a, -a],
+        [-a, +a, -a],
+        [-a, -a, +a],
+        [+a, -a, +a],
+        [+a, +a, +a],
+        [-a, +a, +a],
+    ]) + np.array(center)
+    faces = [
+        [0, 1, 2], [0, 2, 3],  # bottom
+        [4, 5, 6], [4, 6, 7],  # top
+        [0, 1, 5], [0, 5, 4],  # front
+        [2, 3, 7], [2, 7, 6],  # back
+        [1, 2, 6], [1, 6, 5],  # right
+        [0, 3, 7], [0, 7, 4],  # left
+    ]
+    return vertices, faces
+
+
 def create_truncated_bipyramid(original_vertices, truncation_factor=0.3):
     """
     Create a truncated triangular bipyramid.
@@ -463,6 +486,84 @@ def plot_particles(particles, nx=1, ny=1, nz=1, show_duplicated=True,
         showlegend=False
     )
 
+    fig.show()
+
+def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=None, 
+                     shape_color=None, show_particles=True, cube_opacity=0.3,
+                     cube_color='rgba(0,100,255,1)', simulation_data=None, 
+                     geometry_func=None, truncation_factor=None):
+    """
+    Plot cubic particles centered at cavity locations with sizes matching cavity radii.
+    The cube size is calculated to fit inside the spherical cavity, meaning the cube's
+    diagonal equals the sphere's diameter. This gives an edge length of 2r/√3 where
+    r is the cavity radius.
+    
+    Args:
+        particles: List of (position, quaternion) tuples
+        cavity_centers: List of cavity center coordinates
+        cavity_radii: List of cavity radii (will be used as cube sizes)
+        shape_vertices: numpy array of vertex coordinates from file
+        shape_color: color string from file
+        show_particles: Whether to show original particles
+        cube_opacity: Opacity of cavity cubes
+        cube_color: Color of the cubes (default: blue)
+        simulation_data: Dictionary containing simulation metadata
+        geometry_func: function to get geometry
+        truncation_factor: passed to geometry_func if not None
+    """
+    if geometry_func is None:
+        geometry_func = get_bipyramid_geometry
+    
+    fig = go.Figure()
+    
+    if show_particles:
+        # Plot original particles
+        if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
+            vertices, faces, default_color = geometry_func(shape_vertices, shape_color, truncation_factor)
+        else:
+            vertices, faces, default_color = geometry_func(shape_vertices, shape_color)
+        
+        for pos, quat in particles:
+            trace = get_mesh_trace(pos, quat, vertices, faces, default_color)
+            if trace is not None:
+                fig.add_trace(trace)
+    
+    # Plot cavity cubes
+    for cavity_idx, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
+        # Calculate cube edge length to fit inside sphere
+        # For a cube to fit in a sphere: diagonal = diameter
+        # cube_diagonal = edge_length * √3
+        # sphere_diameter = 2 * radius
+        # Therefore: edge_length = 2 * radius / √3
+        edge_length = 2 * radius / np.sqrt(3)
+        
+        # Create cube geometry with calculated size
+        vertices, faces = get_cube_geometry(center, size=edge_length)
+        
+        # Create mesh trace for cube
+        x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
+        i_faces, j_faces, k_faces = zip(*faces)
+        
+        fig.add_trace(go.Mesh3d(
+            x=x, y=y, z=z,
+            i=i_faces, j=j_faces, k=k_faces,
+            opacity=cube_opacity,
+            color=cube_color,
+            name=f'Cavity {cavity_idx+1} Cube (edge={edge_length:.4f}, cavity_radius={radius:.4f})'
+        ))
+    
+    fig.update_layout(
+        title=f'Cavity Cubes - {len(cavity_centers)} cavities',
+        scene=dict(
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z',
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        showlegend=True
+    )
+    
     fig.show()
 
 # ============================================================================
@@ -731,40 +832,55 @@ def calculate_cavity_sphere_radius(particles, cavity_center, shape_vertices=None
     """
     from scipy.spatial import ConvexHull
     
-    # Test different radii
-    radii = np.linspace(0.01, max_radius, num_samples)
-    max_fit_radius = 0.0
+    # Start with a small minimum radius to avoid zero results
+    min_radius = 0.01
+    radii = np.linspace(min_radius, max_radius, num_samples)
+    max_fit_radius = min_radius  # Initialize to minimum radius instead of 0
     
     cavity_center = np.array(cavity_center)
     
-    for radius in radii:
-        # Check if sphere with this radius fits
+    # Get truncated geometry once, outside the loop
+    if geometry_func is not None and truncation_factor is not None:
+        truncated_vertices, _, _ = geometry_func(shape_vertices, None, truncation_factor)
+    else:
+        truncated_vertices = shape_vertices
+                
+    # Pre-calculate transformed vertices for all particles
+    transformed_particles = []
+    for pos, quat in particles:
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        verts = r.apply(truncated_vertices) + np.array(pos)
+        hull = ConvexHull(verts)
+        transformed_particles.append((verts, hull))
+    
+    # Binary search for optimal radius
+    low = 0
+    high = len(radii) - 1
+    
+    while low <= high:
+        mid = (low + high) // 2
+        radius = radii[mid]
         sphere_fits = True
         
-        for pos, quat in particles:
-            # Transform particle vertices to their position and orientation
-            if geometry_func is not None and truncation_factor is not None:
-                verts, _, _ = geometry_func(shape_vertices, None, truncation_factor)
-            else:
-                verts = shape_vertices
-                
-            r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-            verts = r.apply(verts) + np.array(pos)
-            
-            # Calculate distance from cavity center to particle surface using convex hull
-            hull = ConvexHull(verts)
-            
-            # Use the hull equations to calculate the signed distance
-            # The equations are in the form ax + by + cz + d = 0
-            # The signed distance is (ax + by + cz + d) / sqrt(a^2 + b^2 + c^2)
+        # Test sphere against all transformed particles
+        for verts, hull in transformed_particles:
+            # Calculate minimum distance from cavity center to particle surface
             min_distance = float('inf')
             
             for eq in hull.equations:
                 a, b, c, d = eq
                 # Calculate signed distance from cavity center to this face
                 signed_dist = (a * cavity_center[0] + b * cavity_center[1] + c * cavity_center[2] + d)
-                # The absolute distance is the absolute value
-                dist = abs(signed_dist) / np.sqrt(a**2 + b**2 + c**2)
+                # The absolute distance is the absolute value divided by the normal magnitude
+                normal_mag = np.sqrt(a**2 + b**2 + c**2)
+                if normal_mag > 1e-10:  # Avoid division by zero
+                    dist = abs(signed_dist) / normal_mag
+                    min_distance = min(min_distance, dist)
+            
+            # Also check distances to vertices for highly truncated particles
+            if truncation_factor and truncation_factor > 0.3:
+                for vert in verts:
+                    dist = np.linalg.norm(cavity_center - vert)
                 min_distance = min(min_distance, dist)
             
             # If sphere radius is larger than minimum distance, it doesn't fit
@@ -774,150 +890,349 @@ def calculate_cavity_sphere_radius(particles, cavity_center, shape_vertices=None
         
         if sphere_fits:
             max_fit_radius = radius
+            low = mid + 1
         else:
-            break
+            high = mid - 1
+    
+    # Add a small safety margin to avoid intersections
+    # Scale safety margin with truncation - more truncation needs larger margin
+    safety_margin = 0.95
+    if truncation_factor:
+        safety_margin = max(0.90, 0.95 - truncation_factor * 0.1)
+    max_fit_radius *= safety_margin
     
     # Calculate sphere volume
     sphere_volume = (4/3) * np.pi * max_fit_radius**3
     
     return max_fit_radius, sphere_volume
 
-def detect_clathrate_cavities(particles, shape_vertices=None, shape_color=None, 
-                             grid_size=64, padding=0.1, cavity_threshold=0.5, 
-                             min_cavity_size=10, simulation_data=None, geometry_func=None, truncation_factor=None, keep_largest_cavity_only=False):
+def detect_simple_cavities(particles, shape_vertices=None, shape_color=None, 
+                          grid_size=128, padding=0.2, geometry_func=None, truncation_factor=None,
+                          min_radius=0.1, min_separation=0.3, boundary_margin=0.3,
+                          min_surrounding_particles=6, max_empty_neighbors_fraction=0.4,
+                          debug=True):  # Added debug parameter
     """
-    Detect clathrate cavities in a unit cell by finding empty spaces between particles.
+    A simplified version of cavity detection that focuses on core concepts.
     
     Args:
         particles: List of (position, quaternion) tuples
-        shape_vertices: numpy array of vertex coordinates from file
-        shape_color: color string from file
-        grid_size: number of voxels per dimension for cavity detection
-        padding: fraction of box size to pad on each side
-        cavity_threshold: threshold for considering a region as cavity (0-1)
-        min_cavity_size: minimum number of connected voxels to consider as cavity
-        simulation_data: Dictionary containing simulation metadata
-        geometry_func: function to get geometry (default: None)
-        truncation_factor: truncation parameter (default: None)
-        keep_largest_cavity_only: If True, only the largest cavity is kept (default: False)
-    Returns:
-        cavity_voxels: 3D numpy array with cavity regions marked
-        cavity_centers: List of cavity center coordinates
-        cavity_volumes: List of cavity volumes
-        cavity_radii: List of cavity sphere radii
-        voxel_grid: Original particle voxel grid
-        edges: Grid edges for reference
+        shape_vertices: numpy array of vertex coordinates
+        shape_color: color string
+        grid_size: number of voxels per dimension
+        padding: fraction of box size to pad
+        geometry_func: function to get geometry
+        truncation_factor: truncation parameter
+        min_radius: minimum cavity radius to consider (in real units)
+        min_separation: minimum separation between cavity centers (in real units)
+        boundary_margin: minimum distance from box boundaries (in real units)
+        min_surrounding_particles: minimum number of particles that should be near a cavity
+        max_empty_neighbors_fraction: maximum fraction of neighboring voxels that can be empty
     """
-    # First, create the particle voxel grid
-    print("Creating particle voxel grid...")
-    voxel_grid, edges = voxelize_particles(particles, grid_size, padding, shape_vertices, None, geometry_func, truncation_factor)
+    print("\nSimplified Cavity Detection:")
+    print("============================")
+    print(f"\nParameters:")
+    print(f"  min_radius: {min_radius}")
+    print(f"  min_separation: {min_separation}")
+    print(f"  boundary_margin: {boundary_margin}")
+    print(f"  min_surrounding_particles: {min_surrounding_particles}")
+    print(f"  max_empty_neighbors_fraction: {max_empty_neighbors_fraction}")
     
-    # Invert the grid: particles are 0, empty space is 1
-    cavity_grid = 1 - voxel_grid
+    # 1. Create particle grid and determine actual structure boundaries
+    print("\n1. Creating particle grid...")
+    positions = np.array([pos for pos, _ in particles])
+    min_corner = positions.min(axis=0)
+    max_corner = positions.max(axis=0)
+    box_size = max_corner - min_corner
     
-    print(f"Grid shape: {cavity_grid.shape}")
-    print(f"Total empty voxels: {np.sum(cavity_grid)}")
-    print(f"Total particle voxels: {np.sum(voxel_grid)}")
+    # Store actual structure boundaries before adding padding
+    structure_min = min_corner
+    structure_max = max_corner
+    print(f"Structure boundaries:")
+    print(f"  Min: {structure_min}")
+    print(f"  Max: {structure_max}")
     
-    # Apply minimal morphological operations to clean up noise
-    print("Cleaning up cavity grid...")
-    # Use very small structuring elements to preserve cavity structure
-    struct_size = 1  # Use minimal structuring element
-    print(f"Using structuring element size: {struct_size}")
+    # Add padding for grid computation
+    min_corner = min_corner - padding * box_size
+    max_corner = max_corner + padding * box_size
     
-    # Apply opening to remove very small noise (single voxels)
-    cavity_grid = ndimage.binary_opening(cavity_grid, structure=np.ones((struct_size, struct_size, struct_size)))
+    # Create grid edges and centers
+    edges = [np.linspace(min_corner[d], max_corner[d], grid_size + 1) for d in range(3)]
+    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
+    voxel_grid = np.zeros((grid_size, grid_size, grid_size), dtype=bool)
     
-    print(f"After opening - empty voxels: {np.sum(cavity_grid)}")
+    voxel_size = edges[0][1] - edges[0][0]
+    print(f"Box size: {box_size}")
+    print(f"Grid resolution: {voxel_size:.4f} units per voxel")
     
-    # Find connected components (individual cavities)
-    print("Finding connected cavity regions...")
-    labeled_cavities, num_cavities = ndimage.label(cavity_grid)
-
-    print(f"Found {num_cavities} total cavity regions")
+    # 2. Fill in particles
+    print("\n2. Filling particle voxels...")
     
-    if num_cavities == 0:
-        print("No cavities found!")
-        return np.zeros_like(cavity_grid), [], [], [], voxel_grid, edges
+    # Get particle geometry
+    if geometry_func is not None and truncation_factor is not None:
+        vertices, _, _ = geometry_func(shape_vertices, None, truncation_factor)
+    else:
+        vertices = shape_vertices
     
-    # Calculate sizes of all cavities
-    sizes = ndimage.sum(cavity_grid, labeled_cavities, range(1, num_cavities + 1))
-    print(f"Cavity sizes: {sizes}")
-
-    # Sort cavities by size (largest first)
-    sorted_indices = np.argsort(sizes)[::-1]
-    
-    cavity_centers = []
-    cavity_volumes = []
-    cavity_radii = []
-    cavity_voxels = np.zeros_like(cavity_grid)
-    
-    # Process cavities starting from the largest
-    for idx in sorted_indices:
-        cavity_id = idx + 1  # labels start at 1
-        cavity_mask = (labeled_cavities == cavity_id)
-        cavity_size = np.sum(cavity_mask)
+    for pos, quat in particles:
+        # Transform vertices
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        verts = r.apply(vertices) + np.array(pos)
         
-        print(f"Processing cavity {len(cavity_centers)+1} (ID {cavity_id}): size = {cavity_size}")
+        # Get bounding box in grid coordinates
+        minv = verts.min(axis=0)
+        maxv = verts.max(axis=0)
+        idx_min = [max(0, np.searchsorted(centers[d], minv[d], side='left')) for d in range(3)]
+        idx_max = [min(grid_size, np.searchsorted(centers[d], maxv[d], side='right')) for d in range(3)]
         
-        if cavity_size >= min_cavity_size:
-            # Find the optimal cavity center using distance transform
-            from scipy.ndimage import distance_transform_edt
-            
-            # Compute distance transform within the cavity
-            # This gives us the distance from each voxel to the nearest particle surface
-            dist_transform = distance_transform_edt(cavity_mask)
-            
-            # Find the voxel with maximum distance (farthest from any particle)
-            max_dist_idx = np.unravel_index(np.argmax(dist_transform), dist_transform.shape)
-            max_distance = dist_transform[max_dist_idx]
-            
-            print(f"  Max distance from particles: {max_distance:.4f} voxels")
-            
-            # Convert to real coordinates
-            centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
-            real_center = np.array([
-                centers[0][max_dist_idx[0]],
-                centers[1][max_dist_idx[1]],
-                centers[2][max_dist_idx[2]]
-            ])
-            
-            # Calculate cavity volume (in voxel units)
-            voxel_volume = np.prod([(edges[d][1] - edges[d][0]) for d in range(3)])
-            cavity_volume = cavity_size * voxel_volume
-            
-            # Estimate radius from the distance transform result
-            # The max_distance gives us the radius of the largest sphere that fits
-            estimated_radius = max_distance * np.min([(edges[d][1] - edges[d][0]) for d in range(3)])
-            
-            # Fit the largest sphere at this optimal center
-            print(f"Calculating sphere volume for cavity {len(cavity_centers)+1} at optimal center...")
-            sphere_radius, sphere_volume = calculate_cavity_sphere_radius(
-                particles, real_center, shape_vertices, simulation_data=simulation_data,
-                geometry_func=geometry_func, truncation_factor=truncation_factor,
-                max_radius=estimated_radius * 1.5  # Allow some margin for testing
-            )
-            
-            cavity_centers.append(real_center)
-            cavity_volumes.append(sphere_volume)  # Use sphere volume instead of voxel volume
-            cavity_radii.append(sphere_radius)
-            cavity_voxels[cavity_mask] = 1
-            
-            print(f"  Optimal center: {real_center}")
-            print(f"  Voxel volume: {cavity_volume:.6f}")
-            print(f"  Estimated radius from DT: {estimated_radius:.6f}")
-            print(f"  Sphere volume: {sphere_volume:.6f}")
-            print(f"  Sphere radius: {sphere_radius:.6f}")
-            
-            # If we only want the largest cavity, stop here
-            if keep_largest_cavity_only:
+        # Create convex hull
+        hull = ConvexHull(verts)
+        
+        # Check voxels in bounding box
+        for i in range(idx_min[0], idx_max[0]):
+            for j in range(idx_min[1], idx_max[1]):
+                for k in range(idx_min[2], idx_max[2]):
+                    point = np.array([centers[0][i], centers[1][j], centers[2][k]])
+                    
+                    # Check if point is inside hull
+                    inside = True
+                    for eq in hull.equations:
+                        if np.dot(eq[:3], point) + eq[3] > 1e-10:
+                            inside = False
+                            break
+                    
+                    if inside:
+                        voxel_grid[i,j,k] = True
+    
+    print(f"Filled voxels: {np.sum(voxel_grid)}")
+    
+    # 3. Find empty regions (cavities)
+    print("\n3. Finding cavities...")
+    cavity_grid = ~voxel_grid
+    print(f"Initial empty voxels: {np.sum(cavity_grid)}")
+    
+    # Create a mask for the valid region (away from boundaries)
+    valid_region = np.ones_like(cavity_grid, dtype=bool)
+    for d in range(3):
+        # Convert boundary_margin to grid coordinates
+        margin_voxels = int(boundary_margin / voxel_size)
+        
+        # Find indices corresponding to structure boundaries
+        min_idx = np.searchsorted(centers[d], structure_min[d] + boundary_margin)
+        max_idx = np.searchsorted(centers[d], structure_max[d] - boundary_margin)
+        
+        # Create slices for this dimension
+        slices = [slice(None)] * 3
+        
+        # Mask out regions before min boundary
+        slices[d] = slice(0, min_idx)
+        valid_region[tuple(slices)] = False
+        
+        # Mask out regions after max boundary
+        slices[d] = slice(max_idx, None)
+        valid_region[tuple(slices)] = False
+    
+    print(f"Valid region voxels (after boundary filtering): {np.sum(valid_region)}")
+    
+    # Apply the valid region mask to cavity grid
+    cavity_grid = cavity_grid & valid_region
+    print(f"Remaining cavity voxels (after boundary filtering): {np.sum(cavity_grid)}")
+    
+    # Use distance transform to find cavity centers
+    dist_transform = ndimage.distance_transform_edt(cavity_grid)
+    dist_transform_physical = dist_transform * voxel_size
+    print(f"Maximum distance to particle: {np.max(dist_transform_physical):.4f} real units")
+    
+    # Find local maxima in distance transform
+    # Use larger neighborhood size to ensure better separation
+    neighborhood_size = max(3, int(min_separation / voxel_size))
+    local_max = ndimage.maximum_filter(dist_transform_physical, size=neighborhood_size)
+    
+    # Only consider points that are:
+    # 1. Local maxima
+    # 2. Above minimum radius threshold
+    # 3. At least min_separation away from any particle
+    # 4. Within valid region (away from boundaries)
+    maxima = (dist_transform_physical == local_max) & \
+            (dist_transform_physical >= min_radius) & \
+            valid_region
+    
+    maxima_coords = np.argwhere(maxima)
+    print(f"\nFound {len(maxima_coords)} potential cavity centers after initial filtering")
+    print(f"  Min radius threshold: {min_radius}")
+    print(f"  Neighborhood size for local maxima: {neighborhood_size} voxels")
+    
+    # 4. Calculate cavity properties
+    print("\n4. Calculating cavity properties...")
+    cavities = []
+    
+    # Sort coordinates by distance value (largest first)
+    maxima_coords = sorted(
+        maxima_coords,
+        key=lambda coord: dist_transform_physical[tuple(coord)],
+        reverse=True
+    )
+    
+    # Keep track of accepted cavity centers for separation check
+    accepted_centers = []
+    
+    def has_enough_surrounding_particles(coord, radius_voxels):
+        """
+        Check if a cavity has enough surrounding particles by examining shells around it.
+        """
+        x, y, z = coord
+        inner_r = radius_voxels  # Inner radius is the cavity radius
+        outer_r = int(radius_voxels * 2.0)  # Outer radius to check for surrounding particles
+        
+        # Create a spherical shell mask
+        y_grid, x_grid, z_grid = np.ogrid[-outer_r:outer_r+1, -outer_r:outer_r+1, -outer_r:outer_r+1]
+        dist_from_center = np.sqrt(x_grid*x_grid + y_grid*y_grid + z_grid*z_grid)
+        shell_mask = (dist_from_center > inner_r) & (dist_from_center <= outer_r)
+        
+        # Get the region to examine
+        x_min, x_max = max(0, x-outer_r), min(grid_size, x+outer_r+1)
+        y_min, y_max = max(0, y-outer_r), min(grid_size, y+outer_r+1)
+        z_min, z_max = max(0, z-outer_r), min(grid_size, z+outer_r+1)
+        
+        # Adjust shell mask to match the actual region we can examine
+        mask_x_min, mask_x_max = outer_r - (x - x_min), outer_r + (x_max - x)
+        mask_y_min, mask_y_max = outer_r - (y - y_min), outer_r + (y_max - y)
+        mask_z_min, mask_z_max = outer_r - (z - z_min), outer_r + (z_max - z)
+        shell_mask = shell_mask[mask_y_min:mask_y_max, mask_x_min:mask_x_max, mask_z_min:mask_z_max]
+        
+        # Get the particle occupancy in this region
+        neighborhood = voxel_grid[x_min:x_max, y_min:y_max, z_min:z_max]
+        
+        # Calculate statistics for the shell region only
+        shell_voxels = np.sum(shell_mask)
+        particle_voxels_in_shell = np.sum(neighborhood & shell_mask)
+        empty_fraction = 1.0 - (particle_voxels_in_shell / shell_voxels)
+        
+        # Count particles in different directions
+        sectors = []
+        sector_size = outer_r - inner_r
+        
+        # Check each sector
+        sector_checks = [
+            # (slice_x, slice_y, slice_z, name)
+            (slice(sector_size,-sector_size), slice(None,sector_size), slice(sector_size,-sector_size), "+y"),
+            (slice(sector_size,-sector_size), slice(-sector_size,None), slice(sector_size,-sector_size), "-y"),
+            (slice(None,sector_size), slice(sector_size,-sector_size), slice(sector_size,-sector_size), "+x"),
+            (slice(-sector_size,None), slice(sector_size,-sector_size), slice(sector_size,-sector_size), "-x"),
+            (slice(sector_size,-sector_size), slice(sector_size,-sector_size), slice(None,sector_size), "+z"),
+            (slice(sector_size,-sector_size), slice(sector_size,-sector_size), slice(-sector_size,None), "-z")
+        ]
+        
+        sectors_with_particles = 0
+        sector_details = []
+        
+        for sx, sy, sz, name in sector_checks:
+            has_particles = np.any(neighborhood[sx, sy, sz])
+            if has_particles:
+                sectors_with_particles += 1
+            sector_details.append((name, has_particles))
+        
+        # A cavity should have particles in most directions (at least 4 out of 6)
+        enough_surrounding_particles = sectors_with_particles >= 4
+        
+        # The empty fraction check is now more meaningful as it only considers the shell region
+        acceptable_empty_fraction = empty_fraction <= max_empty_neighbors_fraction
+        
+        return (enough_surrounding_particles and acceptable_empty_fraction), \
+               sectors_with_particles, empty_fraction, sector_details
+
+    filtered_by_bounds = 0
+    filtered_by_particles = 0
+    filtered_by_separation = 0
+    
+    print("\nDetailed cavity analysis:")
+    print("========================")
+    
+    for coord in maxima_coords:
+        # Convert to real coordinates
+        center = np.array([centers[d][coord[d]] for d in range(3)])
+        radius = dist_transform_physical[tuple(coord)]
+        radius_voxels = int(radius / voxel_size)
+        
+        print(f"\nAnalyzing potential cavity at {center}")
+        print(f"Radius: {radius:.4f} units ({radius_voxels} voxels)")
+        
+        # Double check that the center is within structure bounds
+        if not all(structure_min[d] + boundary_margin <= center[d] <= structure_max[d] - boundary_margin for d in range(3)):
+            filtered_by_bounds += 1
+            print("  Failed: Outside boundary margins")
+            continue
+        
+        # Check if the cavity has enough surrounding particles
+        passes_particle_check, sectors_count, empty_fraction, sector_details = has_enough_surrounding_particles(coord, radius_voxels)
+        
+        print(f"  Shell analysis:")
+        print(f"    Empty fraction: {empty_fraction:.3f} (max allowed: {max_empty_neighbors_fraction})")
+        print(f"    Sectors with particles: {sectors_count}/6 (minimum needed: 4)")
+        print("    Sector details:")
+        for name, has_particles in sector_details:
+            print(f"      {name}: {'✓' if has_particles else '✗'}")
+        
+        if not passes_particle_check:
+            filtered_by_particles += 1
+            if empty_fraction > max_empty_neighbors_fraction:
+                print("  Failed: Too much empty space in shell")
+            if sectors_count < 4:
+                print("  Failed: Not enough surrounding particles")
+            continue
+        
+        # Check separation from existing cavities
+        too_close = False
+        for existing_center in accepted_centers:
+            separation = np.linalg.norm(center - existing_center)
+            if separation < min_separation:
+                too_close = True
+                filtered_by_separation += 1
+                print(f"  Failed: Too close to existing cavity (separation: {separation:.4f})")
                 break
+        
+        if too_close:
+            continue
+            
+        print("  Passed all checks!")
+        
+        # Add cavity and its center
+        cavities.append({
+            'center': center,
+            'radius': radius,
+            'volume': (4/3) * np.pi * radius**3
+        })
+        accepted_centers.append(center)
     
-    print(f"Identified {len(cavity_centers)} significant cavities")
-    for i, (center, volume, radius) in enumerate(zip(cavity_centers, cavity_volumes, cavity_radii)):
-        print(f"  Cavity {i+1}: center={center}, volume={volume:.6f}, radius={radius:.6f}")
+    print(f"\nFiltering statistics:")
+    print(f"  Filtered by boundary check: {filtered_by_bounds}")
+    print(f"  Filtered by particle check: {filtered_by_particles}")
+    print(f"  Filtered by separation check: {filtered_by_separation}")
+    print(f"  Remaining cavities: {len(cavities)}")
     
-    return cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, voxel_grid, edges
+    print("\nFound cavities:")
+    for i, cavity in enumerate(cavities):
+        print(f"Cavity {i+1}:")
+        print(f"  Center: {cavity['center']}")
+        print(f"  Radius: {cavity['radius']:.4f}")
+        print(f"  Volume: {cavity['volume']:.4f}")
+        # Print distance to structure boundaries
+        distances_to_bounds = np.minimum(
+            cavity['center'] - structure_min,
+            structure_max - cavity['center']
+        )
+        print(f"  Min distance to boundary: {np.min(distances_to_bounds):.4f}")
+    
+    # Visualize
+    if len(cavities) > 0:
+        centers = [c['center'] for c in cavities]
+        radii = [c['radius'] for c in cavities]
+        plot_cavity_spheres(
+            particles, centers, radii,
+            shape_vertices, shape_color, True, 0.3,
+            None, geometry_func, truncation_factor
+        )
+    
+    return cavities
 
 def plot_cavity_spheres(particles, cavity_centers, cavity_radii, shape_vertices=None, 
                        shape_color=None, show_particles=True, sphere_opacity=0.3,
@@ -986,6 +1301,161 @@ def plot_cavity_spheres(particles, cavity_centers, cavity_radii, shape_vertices=
     )
     
     fig.show()
+
+def detect_clathrate_cavities(particles, shape_vertices=None, shape_color=None, 
+                             grid_size=64, padding=0.1, cavity_threshold=0.5, 
+                             min_cavity_size=10, simulation_data=None,
+                             geometry_func=None, truncation_factor=None,
+                             keep_largest_cavity_only=False):
+    """
+    Detect clathrate cavities in a unit cell by finding empty spaces between particles.
+    This is a wrapper around detect_simple_cavities for backward compatibility.
+    
+    Args:
+        particles: List of (position, quaternion) tuples
+        shape_vertices: numpy array of vertex coordinates from file
+        shape_color: color string from file
+        grid_size: number of voxels per dimension for cavity detection
+        padding: fraction of box size to pad on each side
+        cavity_threshold: threshold for considering a region as cavity (0-1)
+        min_cavity_size: minimum number of connected voxels to consider as cavity
+        simulation_data: Dictionary containing simulation metadata
+        geometry_func: function to get geometry
+        truncation_factor: truncation parameter
+        keep_largest_cavity_only: whether to keep only the largest cavity
+    
+    Returns:
+        cavity_voxels: 3D numpy array with cavity regions marked
+        cavity_centers: List of cavity center coordinates
+        cavity_volumes: List of cavity volumes
+        cavity_radii: List of cavity radii
+        voxel_grid: Original particle voxel grid
+        edges: Grid edges for reference
+    """
+    # Convert parameters to detect_simple_cavities format
+    min_radius = (min_cavity_size ** (1/3)) * (padding / grid_size)  # Estimate min_radius from min_cavity_size
+    min_separation = min_radius * 2  # Reasonable separation based on min_radius
+    boundary_margin = padding  # Use padding as boundary margin
+    max_empty_neighbors_fraction = 1 - cavity_threshold  # Convert threshold to empty fraction
+    
+    # Call detect_simple_cavities with converted parameters
+    cavities = detect_simple_cavities(
+        particles=particles,
+        shape_vertices=shape_vertices,
+        shape_color=shape_color,
+        grid_size=grid_size,
+        padding=padding,
+        geometry_func=geometry_func,
+        truncation_factor=truncation_factor,
+        min_radius=min_radius,
+        min_separation=min_separation,
+        boundary_margin=boundary_margin,
+        min_surrounding_particles=2,  # Relaxed requirement for backward compatibility
+        max_empty_neighbors_fraction=max_empty_neighbors_fraction,
+        debug=False  # Don't show debug output in compatibility mode
+    )
+    
+    # Create a voxel grid representation of the cavities
+    positions = np.array([pos for pos, _ in particles])
+    min_corner = positions.min(axis=0)
+    max_corner = positions.max(axis=0)
+    box_size = max_corner - min_corner
+    
+    # Create grid edges
+    min_corner = min_corner - padding * box_size
+    max_corner = max_corner + padding * box_size
+    edges = [np.linspace(min_corner[d], max_corner[d], grid_size + 1) for d in range(3)]
+    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
+    
+    # Create empty cavity grid
+    cavity_voxels = np.zeros((grid_size, grid_size, grid_size), dtype=bool)
+    
+    # Fill cavity grid based on cavity spheres
+    z, y, x = np.meshgrid(
+        np.arange(grid_size),
+        np.arange(grid_size),
+        np.arange(grid_size),
+        indexing='ij'
+    )
+    
+    for cavity in cavities:
+        center = cavity['center']
+        radius = cavity['radius']
+        
+        # Convert center to grid coordinates
+        center_grid = np.array([
+            np.searchsorted(centers[d], center[d])
+            for d in range(3)
+        ])
+        
+        # Calculate distances to center
+        distances = np.sqrt(
+            ((x - center_grid[0]) * (edges[0][1] - edges[0][0]))**2 +
+            ((y - center_grid[1]) * (edges[1][1] - edges[1][0]))**2 +
+            ((z - center_grid[2]) * (edges[2][1] - edges[2][0]))**2
+        )
+        
+        # Mark voxels within radius
+        cavity_voxels |= (distances <= radius)
+    
+    # Create particle grid
+    voxel_grid = np.zeros_like(cavity_voxels)
+    if geometry_func is not None and truncation_factor is not None:
+        vertices, _, _ = geometry_func(shape_vertices, None, truncation_factor)
+    else:
+        vertices = shape_vertices
+    
+    for pos, quat in particles:
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        verts = r.apply(vertices) + np.array(pos)
+        
+        # Get bounding box in grid coordinates
+        minv = verts.min(axis=0)
+        maxv = verts.max(axis=0)
+        idx_min = [max(0, np.searchsorted(centers[d], minv[d], side='left')) for d in range(3)]
+        idx_max = [min(grid_size, np.searchsorted(centers[d], maxv[d], side='right')) for d in range(3)]
+        
+        hull = ConvexHull(verts)
+        
+        for i in range(idx_min[0], idx_max[0]):
+            for j in range(idx_min[1], idx_max[1]):
+                for k in range(idx_min[2], idx_max[2]):
+                    point = np.array([centers[0][i], centers[1][j], centers[2][k]])
+                    inside = True
+                    for eq in hull.equations:
+                        if np.dot(eq[:3], point) + eq[3] > 1e-10:
+                            inside = False
+                            break
+                    if inside:
+                        voxel_grid[i,j,k] = True
+    
+    # Extract cavity properties
+    cavity_centers = [c['center'] for c in cavities]
+    cavity_volumes = [c['volume'] for c in cavities]
+    cavity_radii = [c['radius'] for c in cavities]
+    
+    if keep_largest_cavity_only and len(cavities) > 0:
+        # Find the largest cavity
+        largest_idx = np.argmax(cavity_volumes)
+        cavity_centers = [cavity_centers[largest_idx]]
+        cavity_volumes = [cavity_volumes[largest_idx]]
+        cavity_radii = [cavity_radii[largest_idx]]
+        # Update cavity_voxels to only show largest cavity
+        cavity_voxels = np.zeros_like(cavity_voxels)
+        center = cavity_centers[0]
+        radius = cavity_radii[0]
+        center_grid = np.array([
+            np.searchsorted(centers[d], center[d])
+            for d in range(3)
+        ])
+        distances = np.sqrt(
+            ((x - center_grid[0]) * (edges[0][1] - edges[0][0]))**2 +
+            ((y - center_grid[1]) * (edges[1][1] - edges[1][0]))**2 +
+            ((z - center_grid[2]) * (edges[2][1] - edges[2][0]))**2
+        )
+        cavity_voxels = (distances <= radius)
+    
+    return cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, voxel_grid, edges
 
 def plot_clathrate_cavities(particles, shape_vertices=None, shape_color=None, 
                            cavity_threshold=0.5, min_cavity_size=10, grid_size=64, padding=0.1,
@@ -1104,7 +1574,7 @@ def analyze_clathrate_structure(particles, shape_vertices=None, shape_color=None
     print(f"Unit cell dimensions: {cell_dims}")
     print(f"Unit cell volume: {cell_volume:.3f}")
     
-    cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, particle_voxels, edges = detect_clathrate_cavities(
+    cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, particle_voxels, edges = detect_simple_cavities(
         particles, shape_vertices, shape_color, simulation_data=simulation_data,
         geometry_func=geometry_func,
         truncation_factor=truncation_factor
@@ -1152,7 +1622,7 @@ def analyze_clathrate_structure(particles, shape_vertices=None, shape_color=None
     }
 
 def plot_cavity_analysis(particles, shape_vertices=None, shape_color=None, 
-                        simulation_data=None, geometry_func=None, truncation_factor=None):
+                         simulation_data=None, geometry_func=None, truncation_factor=None):
     """
     Create comprehensive visualization of clathrate cavities with analysis.
     
@@ -1196,7 +1666,7 @@ def plot_cavity_analysis(particles, shape_vertices=None, shape_color=None,
             fig.add_trace(trace, row=1, col=1)
     
     # Detect cavities
-    cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, _, edges = detect_clathrate_cavities(
+    cavity_voxels, cavity_centers, cavity_volumes, cavity_radii, _, edges = detect_simple_cavities(
         particles, shape_vertices, shape_color, simulation_data=simulation_data,
         geometry_func=geometry_func,
         truncation_factor=truncation_factor
@@ -1265,6 +1735,170 @@ def plot_cavity_analysis(particles, shape_vertices=None, shape_color=None,
     fig.show()
     
     return analysis
+
+def find_central_cavity(particles, shape_vertices=None, shape_color=None, 
+                        grid_size=128, padding=0.15, simulation_data=None, 
+                        geometry_func=None, truncation_factor=None):
+    """
+    Find a cavity at the center of the object.
+    
+    Args:
+        particles: List of (position, quaternion) tuples
+        shape_vertices: numpy array of vertex coordinates from file
+        shape_color: color string from file
+        grid_size: number of voxels per dimension
+        padding: fraction of box size to pad on each side
+        simulation_data: Dictionary containing simulation metadata
+        geometry_func: function to get geometry
+        truncation_factor: truncation parameter
+    
+    Returns:
+        cavity_center: [x, y, z] coordinates of cavity center
+        cavity_radius: radius of the cavity
+        cavity_volume: volume of the cavity
+    """
+    # First, find the center of the object
+    positions = np.array([pos for pos, _ in particles])
+    object_center = np.mean(positions, axis=0)
+    
+    print(f"Object center: {object_center}")
+    
+    # Create the particle voxel grid
+    print("Creating particle voxel grid...")
+    voxel_grid, edges = voxelize_particles(particles, grid_size, padding, shape_vertices, None, geometry_func, truncation_factor)
+    
+    # Invert the grid: particles are 0, empty space is 1
+    cavity_grid = 1 - voxel_grid
+    
+    # Convert object center to grid coordinates
+    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
+    center_idx = [
+        np.argmin(np.abs(centers[d] - object_center[d])) 
+        for d in range(3)
+    ]
+    
+    print(f"Center grid indices: {center_idx}")
+    
+    # Create a distance mask that prioritizes the center
+    z, y, x = np.ogrid[:grid_size, :grid_size, :grid_size]
+    dist_from_center = np.sqrt(
+        (x - center_idx[0])**2 + 
+        (y - center_idx[1])**2 + 
+        (z - center_idx[2])**2
+    )
+    
+    # Weight the cavity grid by distance from center
+    weighted_cavity = cavity_grid * (1 / (1 + dist_from_center))
+    
+    # Find the maximum value in the weighted cavity grid
+    max_idx = np.unravel_index(np.argmax(weighted_cavity), weighted_cavity.shape)
+    
+    # Convert to real coordinates
+    cavity_center = np.array([
+        centers[0][max_idx[0]],
+        centers[1][max_idx[1]],
+        centers[2][max_idx[2]]
+    ])
+    
+    print(f"Found cavity center at: {cavity_center}")
+    
+    # Calculate the cavity radius and volume
+    sphere_radius, sphere_volume = calculate_cavity_sphere_radius(
+        particles, cavity_center, shape_vertices,
+        simulation_data=simulation_data,
+        geometry_func=geometry_func,
+        truncation_factor=truncation_factor
+    )
+    
+    print(f"Cavity radius: {sphere_radius}")
+    print(f"Cavity volume: {sphere_volume}")
+    
+    # Visualize the cavity
+    plot_cavity_spheres(
+        particles, [cavity_center], [sphere_radius],
+        shape_vertices, shape_color, True, 0.3,
+        simulation_data, geometry_func, truncation_factor
+    )
+    
+    return cavity_center, sphere_radius, sphere_volume
+
+def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=None, 
+                     shape_color=None, show_particles=True, cube_opacity=0.3,
+                     cube_color='rgba(0,100,255,1)', simulation_data=None, 
+                     geometry_func=None, truncation_factor=None):
+    """
+    Plot cubic particles centered at cavity locations with sizes matching cavity radii.
+    The cube size is calculated to fit inside the spherical cavity, meaning the cube's
+    diagonal equals the sphere's diameter. This gives an edge length of 2r/√3 where
+    r is the cavity radius.
+    
+    Args:
+        particles: List of (position, quaternion) tuples
+        cavity_centers: List of cavity center coordinates
+        cavity_radii: List of cavity radii (will be used as cube sizes)
+        shape_vertices: numpy array of vertex coordinates from file
+        shape_color: color string from file
+        show_particles: Whether to show original particles
+        cube_opacity: Opacity of cavity cubes
+        cube_color: Color of the cubes (default: blue)
+        simulation_data: Dictionary containing simulation metadata
+        geometry_func: function to get geometry
+        truncation_factor: passed to geometry_func if not None
+    """
+    if geometry_func is None:
+        geometry_func = get_bipyramid_geometry
+    
+    fig = go.Figure()
+    
+    if show_particles:
+        # Plot original particles
+        if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
+            vertices, faces, default_color = geometry_func(shape_vertices, shape_color, truncation_factor)
+        else:
+            vertices, faces, default_color = geometry_func(shape_vertices, shape_color)
+        
+        for pos, quat in particles:
+            trace = get_mesh_trace(pos, quat, vertices, faces, default_color)
+            if trace is not None:
+                fig.add_trace(trace)
+    
+    # Plot cavity cubes
+    for cavity_idx, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
+        # Calculate cube edge length to fit inside sphere
+        # For a cube to fit in a sphere: diagonal = diameter
+        # cube_diagonal = edge_length * √3
+        # sphere_diameter = 2 * radius
+        # Therefore: edge_length = 2 * radius / √3
+        edge_length = 2 * radius / np.sqrt(3)
+        
+        # Create cube geometry with calculated size
+        vertices, faces = get_cube_geometry(center, size=edge_length)
+        
+        # Create mesh trace for cube
+        x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
+        i_faces, j_faces, k_faces = zip(*faces)
+        
+        fig.add_trace(go.Mesh3d(
+            x=x, y=y, z=z,
+            i=i_faces, j=j_faces, k=k_faces,
+            opacity=cube_opacity,
+            color=cube_color,
+            name=f'Cavity {cavity_idx+1} Cube (edge={edge_length:.4f}, cavity_radius={radius:.4f})'
+        ))
+    
+    fig.update_layout(
+        title=f'Cavity Cubes - {len(cavity_centers)} cavities',
+        scene=dict(
+            xaxis_title='X',
+            yaxis_title='Y',
+            zaxis_title='Z',
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=40),
+        showlegend=True
+    )
+    
+    fig.show()
 
 # ============================================================================
 # MAIN EXECUTION
@@ -1341,10 +1975,18 @@ def main():
         simulation_data=simulation_data
     )
     
+    # Example 8: Find central cavity
+    print("\n8. Finding central cavity...")
+    find_central_cavity(
+        particles=particles,
+        shape_vertices=shape_vertices,
+        shape_color=shape_color,
+        simulation_data=simulation_data
+    )
+    
     print("\n" + "="*60)
     print("ANALYSIS COMPLETE")
     print("="*60)
 
 if __name__ == "__main__":
     main() 
-# %%
