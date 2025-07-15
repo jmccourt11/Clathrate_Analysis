@@ -13,7 +13,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import datetime
 from clathrate_analysis import voxelize_particles
-    
+from scipy.spatial import ConvexHull
+from clathrate_analysis import plot_cavity_objects
 
 def save_voxel_grid_as_tiff(voxel_grid, filename, pixel_size=1.0):
     """
@@ -111,6 +112,61 @@ def create_tomogram_from_particles(particles, grid_size=128, padding=0.1, shape_
     
     # Save as TIFF
     save_voxel_grid_as_tiff(voxel_grid, filename, pixel_size)
+    
+    return filename
+
+def create_tomogram_with_cavity_objects(particles, cavity_centers, cavity_radii, 
+                                  grid_size=128, padding=0.1, shape_vertices=None, shape_faces=None,
+                                  pixel_size=1.0, filename=None, geometry_func=None, truncation_factor=None,
+                                  cavity_object_type='cube', cavity_object_scale=1.0):
+    """
+    Create and save a 3D tomogram from particle positions with objects placed in cavities.
+    
+    Args:
+        particles: list of (position, quaternion) tuples
+        cavity_centers: List of cavity center coordinates
+        cavity_radii: List of cavity radii
+        grid_size: number of voxels per dimension
+        padding: fraction of box size to pad on each side
+        shape_vertices: (N, 3) array of particle vertices
+        shape_faces: list of face indices
+        pixel_size: physical size of each pixel in nanometers
+        filename: output filename (if None, auto-generate)
+        geometry_func: function to get geometry for particles
+        truncation_factor: truncation parameter for particles
+        cavity_object_type: Type of object to place at cavities ('cube', 'bipyramid', etc.)
+        cavity_object_scale: Scale factor to adjust object size relative to cavity radius
+    
+    Returns:
+        filename: path to saved file
+    """
+    # Get voxel grid from plot_cavity_objects
+    print(f"Creating voxel grid with particles and cavity {cavity_object_type}s...")
+    voxel_grid, _ = plot_cavity_objects(
+        particles=particles,
+        cavity_centers=cavity_centers,
+        cavity_radii=cavity_radii,
+        shape_vertices=shape_vertices,
+        show_particles=True,
+        geometry_func=geometry_func,
+        truncation_factor=truncation_factor,
+        cavity_object_type=cavity_object_type,
+        cavity_object_scale=cavity_object_scale
+    )
+    
+    # Auto-generate filename if not provided
+    if filename is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"tomogram_with_{cavity_object_type}s_{timestamp}.tif"
+    
+    # Save as TIFF
+    save_voxel_grid_as_tiff(voxel_grid, filename, pixel_size)
+    
+    print(f"\nTomogram statistics:")
+    print(f"  Grid size: {grid_size}x{grid_size}x{grid_size}")
+    print(f"  Original particles: {np.sum(voxel_grid == 1.0)} voxels")
+    print(f"  Cavity {cavity_object_type}s: {np.sum(voxel_grid == 2.0)} voxels")
+    print(f"  Empty space: {np.sum(voxel_grid == 0.0)} voxels")
     
     return filename
 

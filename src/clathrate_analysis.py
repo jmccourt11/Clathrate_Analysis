@@ -488,25 +488,189 @@ def plot_particles(particles, nx=1, ny=1, nz=1, show_duplicated=True,
 
     fig.show()
 
-def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=None, 
-                     shape_color=None, show_particles=True, cube_opacity=0.3,
-                     cube_color='rgba(0,100,255,1)', simulation_data=None, 
-                     geometry_func=None, truncation_factor=None):
+def plot_cavity_objects(particles, cavity_centers, cavity_radii, shape_vertices=None, 
+                     shape_color=None, show_particles=True, object_opacity=0.3,
+                     object_color='rgba(0,100,255,1)', simulation_data=None, 
+                     geometry_func=None, truncation_factor=None,
+                     cavity_object_type='cube', cavity_object_scale=1.0):
     """
-    Plot cubic particles centered at cavity locations with sizes matching cavity radii.
-    The cube size is calculated to fit inside the spherical cavity, meaning the cube's
-    diagonal equals the sphere's diameter. This gives an edge length of 2r/√3 where
-    r is the cavity radius.
+    Plot objects centered at cavity locations with sizes based on cavity radii.
     
     Args:
         particles: List of (position, quaternion) tuples
         cavity_centers: List of cavity center coordinates
-        cavity_radii: List of cavity radii (will be used as cube sizes)
+        cavity_radii: List of cavity radii
         shape_vertices: numpy array of vertex coordinates from file
         shape_color: color string from file
         show_particles: Whether to show original particles
-        cube_opacity: Opacity of cavity cubes
-        cube_color: Color of the cubes (default: blue)
+        object_opacity: Opacity of cavity objects
+        object_color: Color of the objects (default: blue)
+        simulation_data: Dictionary containing simulation metadata
+        geometry_func: function to get geometry for particles
+        truncation_factor: passed to geometry_func if not None
+        cavity_object_type: Type of object to place at cavities ('cube', 'bipyramid', etc.)
+        cavity_object_scale: Scale factor to adjust object size relative to cavity radius
+        
+    Returns:
+        voxel_grid: 3D numpy array with particles (1.0) and cavity objects (2.0)
+        edges: Grid edges for reference
+    """
+    if geometry_func is None:
+        geometry_func = get_bipyramid_geometry
+    
+    # First create the voxel grid
+    grid_size = 128  # Standard grid size
+    padding = 0.1    # Standard padding
+    
+    # Get particle positions and box dimensions
+    positions = np.array([pos for pos, _ in particles])
+    min_corner = positions.min(axis=0)
+    max_corner = positions.max(axis=0)
+    box_size = max_corner - min_corner
+    
+    # Add padding
+    min_corner = min_corner - padding * box_size
+    max_corner = max_corner + padding * box_size
+    
+    # Create grid edges and centers
+    edges = [np.linspace(min_corner[d], max_corner[d], grid_size + 1) for d in range(3)]
+    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
+    voxel_grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
+    
+    # Get base geometry for particles
+    if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
+        particle_vertices, particle_faces, _ = geometry_func(shape_vertices, shape_color, truncation_factor)
+    else:
+        particle_vertices, particle_faces, _ = geometry_func(shape_vertices, shape_color)
+    
+    # Fill in particles with value 1.0
+    if show_particles:
+        for pos, quat in particles:
+            r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+            verts = r.apply(particle_vertices) + np.array(pos)
+            hull = ConvexHull(verts)
+            
+            # Get bounding box in grid coordinates
+            minv = verts.min(axis=0)
+            maxv = verts.max(axis=0)
+            idx_min = [max(0, np.searchsorted(centers[d], minv[d], side='left')) for d in range(3)]
+            idx_max = [min(grid_size, np.searchsorted(centers[d], maxv[d], side='right')) for d in range(3)]
+            
+            # Fill in particle voxels
+            for i in range(idx_min[0], idx_max[0]):
+                for j in range(idx_min[1], idx_max[1]):
+                    for k in range(idx_min[2], idx_max[2]):
+                        point = np.array([centers[0][i], centers[1][j], centers[2][k]])
+                        inside = True
+                        for eq in hull.equations:
+                            if np.dot(eq[:3], point) + eq[3] > 1e-10:
+                                inside = False
+                                break
+                        if inside:
+                            voxel_grid[i,j,k] = 1.0
+    
+    if cavity_centers and cavity_radii is not None:
+        # Fill in cavity objects with value 2.0
+        for center, radius in zip(cavity_centers, cavity_radii):
+            # Get object geometry based on type
+            if cavity_object_type == 'cube':
+                # For cubes, edge_length = 2 * radius / √3 to fit inside sphere
+                edge_length = 2 * radius * cavity_object_scale / np.sqrt(3)
+                vertices, faces = get_cube_geometry(center, size=edge_length)
+            elif cavity_object_type == 'bipyramid':
+                # For bipyramids, scale the original vertices to fit
+                vertices = particle_vertices.copy() * (radius * cavity_object_scale)
+                faces = particle_faces
+                # Move to cavity center
+                vertices = vertices + center
+            else:
+                raise ValueError(f"Unsupported cavity object type: {cavity_object_type}")
+            
+            # Create convex hull for the object
+            hull = ConvexHull(vertices)
+            
+            # Get bounding box in grid coordinates
+            minv = vertices.min(axis=0)
+            maxv = vertices.max(axis=0)
+            idx_min = [max(0, np.searchsorted(centers[d], minv[d], side='left')) for d in range(3)]
+            idx_max = [min(grid_size, np.searchsorted(centers[d], maxv[d], side='right')) for d in range(3)]
+            
+            # Fill in object voxels
+            for i in range(idx_min[0], idx_max[0]):
+                for j in range(idx_min[1], idx_max[1]):
+                    for k in range(idx_min[2], idx_max[2]):
+                        point = np.array([centers[0][i], centers[1][j], centers[2][k]])
+                        inside = True
+                        for eq in hull.equations:
+                            if np.dot(eq[:3], point) + eq[3] > 1e-10:
+                                inside = False
+                                break
+                        if inside:
+                            voxel_grid[i,j,k] = 2.0
+    
+    # Create visualization
+    fig = go.Figure()
+    
+    if show_particles:
+        # Plot original particles
+        for pos, quat in particles:
+            trace = get_mesh_trace(pos, quat, particle_vertices, particle_faces, shape_color or 'rgba(150,150,250,0.6)')
+            if trace is not None:
+                fig.add_trace(trace)
+    
+    # Plot cavity objects
+    if cavity_centers and cavity_radii is not None:
+        for cavity_idx, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
+            if cavity_object_type == 'cube':
+                edge_length = 2 * radius * cavity_object_scale / np.sqrt(3)
+                vertices, faces = get_cube_geometry(center, size=edge_length)
+                obj_name = f'Cavity {cavity_idx+1} Cube (edge={edge_length:.4f}, cavity_radius={radius:.4f})'
+            elif cavity_object_type == 'bipyramid':
+                vertices = particle_vertices.copy() * (radius * cavity_object_scale) + center
+                faces = particle_faces
+                obj_name = f'Cavity {cavity_idx+1} Bipyramid (radius={radius:.4f})'
+            
+            x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
+            i_faces, j_faces, k_faces = zip(*faces) if faces else ([], [], [])
+            
+            fig.add_trace(go.Mesh3d(
+                x=x, y=y, z=z,
+                i=i_faces, j=j_faces, k=k_faces,
+                opacity=object_opacity,
+                color=object_color,
+                name=obj_name
+            ))
+        
+        fig.update_layout(
+            title=f'Cavity Objects ({cavity_object_type}) - {len(cavity_centers)} cavities',
+            scene=dict(
+                xaxis_title='X',
+                yaxis_title='Y',
+                zaxis_title='Z',
+                aspectmode='data'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
+            showlegend=True
+        )
+    
+    fig.show()
+    
+    return voxel_grid, edges
+
+def plot_cavity_spheres(particles, cavity_centers, cavity_radii, shape_vertices=None, 
+                       shape_color=None, show_particles=True, sphere_opacity=0.3,
+                       simulation_data=None, geometry_func=None, truncation_factor=None):
+    """
+    Plot cavity centers as spheres with their calculated radii.
+    
+    Args:
+        particles: List of (position, quaternion) tuples
+        cavity_centers: List of cavity center coordinates
+        cavity_radii: List of cavity sphere radii
+        shape_vertices: numpy array of vertex coordinates from file
+        shape_color: color string from file
+        show_particles: Whether to show particles
+        sphere_opacity: Opacity of cavity spheres
         simulation_data: Dictionary containing simulation metadata
         geometry_func: function to get geometry
         truncation_factor: passed to geometry_func if not None
@@ -517,7 +681,7 @@ def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=No
     fig = go.Figure()
     
     if show_particles:
-        # Plot original particles
+        # Plot particles
         if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
             vertices, faces, default_color = geometry_func(shape_vertices, shape_color, truncation_factor)
         else:
@@ -528,32 +692,27 @@ def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=No
             if trace is not None:
                 fig.add_trace(trace)
     
-    # Plot cavity cubes
-    for cavity_idx, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
-        # Calculate cube edge length to fit inside sphere
-        # For a cube to fit in a sphere: diagonal = diameter
-        # cube_diagonal = edge_length * √3
-        # sphere_diameter = 2 * radius
-        # Therefore: edge_length = 2 * radius / √3
-        edge_length = 2 * radius / np.sqrt(3)
+    # Plot cavity spheres
+    for i, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
+        # Create sphere mesh
+        phi = np.linspace(0, 2*np.pi, 20)
+        theta = np.linspace(0, np.pi, 20)
+        phi, theta = np.meshgrid(phi, theta)
         
-        # Create cube geometry with calculated size
-        vertices, faces = get_cube_geometry(center, size=edge_length)
+        x = center[0] + radius * np.sin(theta) * np.cos(phi)
+        y = center[1] + radius * np.sin(theta) * np.sin(phi)
+        z = center[2] + radius * np.cos(theta)
         
-        # Create mesh trace for cube
-        x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
-        i_faces, j_faces, k_faces = zip(*faces)
-        
-        fig.add_trace(go.Mesh3d(
+        fig.add_trace(go.Surface(
             x=x, y=y, z=z,
-            i=i_faces, j=j_faces, k=k_faces,
-            opacity=cube_opacity,
-            color=cube_color,
-            name=f'Cavity {cavity_idx+1} Cube (edge={edge_length:.4f}, cavity_radius={radius:.4f})'
+            opacity=sphere_opacity,
+            colorscale='Blues',
+            showscale=False,
+            name=f'Cavity {i+1} Sphere (r={radius:.4f})'
         ))
     
     fig.update_layout(
-        title=f'Cavity Cubes - {len(cavity_centers)} cavities',
+        title=f'Cavity Spheres - {len(cavity_centers)} cavities',
         scene=dict(
             xaxis_title='X',
             yaxis_title='Y',
@@ -565,347 +724,6 @@ def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=No
     )
     
     fig.show()
-
-# ============================================================================
-# VOXELIZATION AND FFT FUNCTIONS
-# ============================================================================
-
-def voxelize_particles(particles, grid_size=64, padding=0.1, shape_vertices=None, shape_faces=None, geometry_func=None, truncation_factor=None):
-    """
-    Convert particle positions to a 3D voxel grid.
-    
-    Args:
-        particles: list of (position, quaternion) tuples
-        grid_size: number of voxels per dimension
-        padding: fraction of box size to pad on each side
-        shape_vertices: (N, 3) array of particle vertices
-        shape_faces: list of face indices
-        geometry_func: function to get geometry (default: None)
-        truncation_factor: truncation parameter (default: None)
-    Returns:
-        voxel_grid: 3D numpy array
-        grid_edges: (x_edges, y_edges, z_edges)
-    """
-    positions = np.array([pos for pos, _ in particles])
-    min_corner = positions.min(axis=0)
-    max_corner = positions.max(axis=0)
-    box_size = max_corner - min_corner
-    min_corner = min_corner - padding * box_size
-    max_corner = max_corner + padding * box_size
-    
-    # Compute voxel edges and centers
-    edges = [
-        np.linspace(min_corner[d], max_corner[d], grid_size + 1)
-        for d in range(3)
-    ]
-    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
-    voxel_grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
-    
-    # For each particle, fill in the voxels inside the transformed shape
-    for pos, quat in particles:
-        # Use geometry_func if provided, else use shape_vertices
-        if geometry_func is not None:
-            if truncation_factor is not None:
-                verts, _, _ = geometry_func(shape_vertices, shape_faces, truncation_factor)
-            else:
-                verts, _, _ = geometry_func(shape_vertices, shape_faces)
-        else:
-            verts = shape_vertices
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-        verts = r.apply(verts) + np.array(pos)
-        hull = ConvexHull(verts)
-        eqs = hull.equations
-        
-        # Get bounding box in grid coordinates
-        minv = verts.min(axis=0)
-        maxv = verts.max(axis=0)
-        idx_min = [np.searchsorted(centers[d], minv[d], side='left') for d in range(3)]
-        idx_max = [np.searchsorted(centers[d], maxv[d], side='right') for d in range(3)]
-        
-        # Clamp to grid
-        idx_min = [max(0, idx_min[d]) for d in range(3)]
-        idx_max = [min(grid_size, idx_max[d]) for d in range(3)]
-        
-        # Generate all voxel centers in bounding box
-        xs = centers[0][idx_min[0]:idx_max[0]]
-        ys = centers[1][idx_min[1]:idx_max[1]]
-        zs = centers[2][idx_min[2]:idx_max[2]]
-        XX, YY, ZZ = np.meshgrid(xs, ys, zs, indexing='ij')
-        pts = np.stack([XX, YY, ZZ], axis=-1).reshape(-1, 3)
-        
-        # Check all points at once
-        inside = np.all((eqs[:,:3] @ pts.T + eqs[:,3:]) <= 1e-8, axis=0)
-        
-        # Set all inside voxels to 1
-        idxs = np.argwhere(inside)
-        for flat_idx in idxs:
-            i = flat_idx[0] // (len(ys)*len(zs))
-            j = (flat_idx[0] // len(zs)) % len(ys)
-            k = flat_idx[0] % len(zs)
-            voxel_grid[idx_min[0]+i, idx_min[1]+j, idx_min[2]+k] = 1.0
-    
-    return voxel_grid, edges
-
-def create_2d_projections(voxel_grid, projection_type='sum'):
-    """
-    Create 2D projections of the 3D voxel grid.
-    
-    Args:
-        voxel_grid: 3D numpy array
-        projection_type: 'sum', 'max', or 'mean'
-    
-    Returns:
-        projections: dict with keys 'xy', 'xz', 'yz'
-    """
-    if projection_type == 'sum':
-        xy_proj = np.sum(voxel_grid, axis=2)
-        xz_proj = np.sum(voxel_grid, axis=1)
-        yz_proj = np.sum(voxel_grid, axis=0)
-    elif projection_type == 'max':
-        xy_proj = np.max(voxel_grid, axis=2)
-        xz_proj = np.max(voxel_grid, axis=1)
-        yz_proj = np.max(voxel_grid, axis=0)
-    elif projection_type == 'mean':
-        xy_proj = np.mean(voxel_grid, axis=2)
-        xz_proj = np.mean(voxel_grid, axis=1)
-        yz_proj = np.mean(voxel_grid, axis=0)
-    else:
-        raise ValueError("projection_type must be 'sum', 'max', or 'mean'")
-    
-    return {'xy': xy_proj, 'xz': xz_proj, 'yz': yz_proj}
-
-def compute_2d_fft(projection):
-    """
-    Compute 2D FFT of a projection.
-    
-    Args:
-        projection: 2D numpy array
-    
-    Returns:
-        fft_mag: 2D array of FFT magnitude
-        kx, ky: frequency arrays
-    """
-    fft_2d = np.fft.fft2(projection)
-    fft_mag = np.abs(np.fft.fftshift(fft_2d))
-    
-    nx, ny = projection.shape
-    kx = np.fft.fftshift(np.fft.fftfreq(nx))
-    ky = np.fft.fftshift(np.fft.fftfreq(ny))
-    
-    return fft_mag, kx, ky
-
-def plot_projections_with_ffts(projections, log_scale=True, threshold=0.1):
-    """
-    Plot original 2D projections alongside their corresponding FFTs.
-    
-    Args:
-        projections: dict with 'xy', 'xz', 'yz' keys
-        log_scale: whether to plot log10(magnitude) for FFTs
-        threshold: fraction of max to threshold for FFT visualization
-    """
-    fig = make_subplots(
-        rows=2, cols=3,
-        subplot_titles=[
-            'XY Projection', 'XZ Projection', 'YZ Projection',
-            'XY Projection FFT', 'XZ Projection FFT', 'YZ Projection FFT'
-        ],
-        specs=[[{'type': 'heatmap'}, {'type': 'heatmap'}, {'type': 'heatmap'}],
-               [{'type': 'heatmap'}, {'type': 'heatmap'}, {'type': 'heatmap'}]]
-    )
-    
-    for i, (plane, proj) in enumerate(projections.items()):
-        # Plot original projection
-        fig.add_trace(go.Heatmap(
-            z=proj,
-            colorscale='Viridis',
-            showscale=True
-        ), row=1, col=i+1)
-        
-        # Plot FFT
-        fft_mag, kx, ky = compute_2d_fft(proj)
-        
-        if log_scale:
-            fft_mag = np.log10(fft_mag + 1e-6)
-        
-        vmax = fft_mag.max()
-        mask = fft_mag > (threshold * vmax)
-        fft_mag[~mask] = 0
-        
-        fig.add_trace(go.Heatmap(
-            z=fft_mag,
-            x=kx,
-            y=ky,
-            colorscale='Viridis',
-            showscale=True
-        ), row=2, col=i+1)
-    
-    fig.update_layout(
-        title='2D Projections and Their FFTs',
-        height=800,
-        width=1200,
-        showlegend=False
-    )
-    fig.show()
-
-def plot_fft_magnitude(voxel_grid, edges, log_scale=True, threshold=0.1):
-    """
-    Plot the magnitude of the 3D FFT of the voxel grid.
-    
-    Args:
-        voxel_grid: 3D numpy array
-        edges: (x_edges, y_edges, z_edges)
-        log_scale: whether to plot log10(magnitude)
-        threshold: fraction of max to threshold for visualization
-    """
-    fft_grid = np.fft.fftn(voxel_grid)
-    fft_mag = np.abs(np.fft.fftshift(fft_grid))
-    if log_scale:
-        fft_mag = np.log10(fft_mag + 1e-6)
-    
-    # Threshold for visualization
-    vmax = fft_mag.max()
-    mask = fft_mag > (threshold * vmax)
-    
-    # Get coordinates
-    grid_shape = fft_mag.shape
-    kx = np.fft.fftshift(np.fft.fftfreq(grid_shape[0]))
-    ky = np.fft.fftshift(np.fft.fftfreq(grid_shape[1]))
-    kz = np.fft.fftshift(np.fft.fftfreq(grid_shape[2]))
-    KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
-    
-    # Only plot points above threshold
-    x, y, z, val = KX[mask], KY[mask], KZ[mask], fft_mag[mask]
-    
-    fig = go.Figure(data=[go.Scatter3d(
-        x=x.flatten(), y=y.flatten(), z=z.flatten(),
-        mode='markers',
-        marker=dict(
-            size=3, 
-            color=val, 
-            colorscale='Viridis', 
-            opacity=0.7,
-            showscale=True,
-            colorbar=dict(
-                title='FFT Magnitude',
-                x=1.1,
-                len=0.8,
-                thickness=20
-            )
-        ),
-        text=[f"{v:.2f}" for v in val.flatten()]
-    )])
-    
-    fig.update_layout(
-        scene=dict(
-            xaxis_title='kx', yaxis_title='ky', zaxis_title='kz',
-            aspectmode='cube',
-        ),
-        title='3D FFT Magnitude (Structure Factor)',
-        margin=dict(l=0, r=100, b=0, t=40),
-        showlegend=False
-    )
-    fig.show()
-
-# ============================================================================
-# CLATHRATE CAVITY DETECTION
-# ============================================================================
-
-def calculate_cavity_sphere_radius(particles, cavity_center, shape_vertices=None, 
-                                  max_radius=1.0, num_samples=100, simulation_data=None,
-                                  geometry_func=None, truncation_factor=None):
-    """
-    Calculate the radius of the largest sphere that can fit at the cavity center.
-    
-    Args:
-        particles: List of (position, quaternion) tuples
-        cavity_center: [x, y, z] coordinates of cavity center
-        shape_vertices: numpy array of vertex coordinates from file
-        max_radius: maximum radius to test
-        num_samples: number of radius samples to test
-        simulation_data: Dictionary containing simulation metadata
-        geometry_func: function to get geometry (default: None)
-        truncation_factor: truncation parameter (default: None)
-    
-    Returns:
-        max_fit_radius: radius of largest sphere that fits
-        sphere_volume: volume of the sphere (4/3 * pi * r^3)
-    """
-    from scipy.spatial import ConvexHull
-    
-    # Start with a small minimum radius to avoid zero results
-    min_radius = 0.01
-    radii = np.linspace(min_radius, max_radius, num_samples)
-    max_fit_radius = min_radius  # Initialize to minimum radius instead of 0
-    
-    cavity_center = np.array(cavity_center)
-    
-    # Get truncated geometry once, outside the loop
-    if geometry_func is not None and truncation_factor is not None:
-        truncated_vertices, _, _ = geometry_func(shape_vertices, None, truncation_factor)
-    else:
-        truncated_vertices = shape_vertices
-                
-    # Pre-calculate transformed vertices for all particles
-    transformed_particles = []
-    for pos, quat in particles:
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-        verts = r.apply(truncated_vertices) + np.array(pos)
-        hull = ConvexHull(verts)
-        transformed_particles.append((verts, hull))
-    
-    # Binary search for optimal radius
-    low = 0
-    high = len(radii) - 1
-    
-    while low <= high:
-        mid = (low + high) // 2
-        radius = radii[mid]
-        sphere_fits = True
-        
-        # Test sphere against all transformed particles
-        for verts, hull in transformed_particles:
-            # Calculate minimum distance from cavity center to particle surface
-            min_distance = float('inf')
-            
-            for eq in hull.equations:
-                a, b, c, d = eq
-                # Calculate signed distance from cavity center to this face
-                signed_dist = (a * cavity_center[0] + b * cavity_center[1] + c * cavity_center[2] + d)
-                # The absolute distance is the absolute value divided by the normal magnitude
-                normal_mag = np.sqrt(a**2 + b**2 + c**2)
-                if normal_mag > 1e-10:  # Avoid division by zero
-                    dist = abs(signed_dist) / normal_mag
-                    min_distance = min(min_distance, dist)
-            
-            # Also check distances to vertices for highly truncated particles
-            if truncation_factor and truncation_factor > 0.3:
-                for vert in verts:
-                    dist = np.linalg.norm(cavity_center - vert)
-                min_distance = min(min_distance, dist)
-            
-            # If sphere radius is larger than minimum distance, it doesn't fit
-            if radius >= min_distance:
-                sphere_fits = False
-                break
-        
-        if sphere_fits:
-            max_fit_radius = radius
-            low = mid + 1
-        else:
-            high = mid - 1
-    
-    # Add a small safety margin to avoid intersections
-    # Scale safety margin with truncation - more truncation needs larger margin
-    safety_margin = 0.95
-    if truncation_factor:
-        safety_margin = max(0.90, 0.95 - truncation_factor * 0.1)
-    max_fit_radius *= safety_margin
-    
-    # Calculate sphere volume
-    sphere_volume = (4/3) * np.pi * max_fit_radius**3
-    
-    return max_fit_radius, sphere_volume
-
 def detect_simple_cavities(particles, shape_vertices=None, shape_color=None, 
                           grid_size=128, padding=0.2, geometry_func=None, truncation_factor=None,
                           min_radius=0.1, min_separation=0.3, boundary_margin=0.3,
@@ -1234,74 +1052,6 @@ def detect_simple_cavities(particles, shape_vertices=None, shape_color=None,
     
     return cavities
 
-def plot_cavity_spheres(particles, cavity_centers, cavity_radii, shape_vertices=None, 
-                       shape_color=None, show_particles=True, sphere_opacity=0.3,
-                       simulation_data=None, geometry_func=None, truncation_factor=None):
-    """
-    Plot cavity centers as spheres with their calculated radii.
-    
-    Args:
-        particles: List of (position, quaternion) tuples
-        cavity_centers: List of cavity center coordinates
-        cavity_radii: List of cavity sphere radii
-        shape_vertices: numpy array of vertex coordinates from file
-        shape_color: color string from file
-        show_particles: Whether to show particles
-        sphere_opacity: Opacity of cavity spheres
-        simulation_data: Dictionary containing simulation metadata
-        geometry_func: function to get geometry
-        truncation_factor: passed to geometry_func if not None
-    """
-    if geometry_func is None:
-        geometry_func = get_bipyramid_geometry
-    
-    fig = go.Figure()
-    
-    if show_particles:
-        # Plot particles
-        if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
-            vertices, faces, default_color = geometry_func(shape_vertices, shape_color, truncation_factor)
-        else:
-            vertices, faces, default_color = geometry_func(shape_vertices, shape_color)
-        
-        for pos, quat in particles:
-            trace = get_mesh_trace(pos, quat, vertices, faces, default_color)
-            if trace is not None:
-                fig.add_trace(trace)
-    
-    # Plot cavity spheres
-    for i, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
-        # Create sphere mesh
-        phi = np.linspace(0, 2*np.pi, 20)
-        theta = np.linspace(0, np.pi, 20)
-        phi, theta = np.meshgrid(phi, theta)
-        
-        x = center[0] + radius * np.sin(theta) * np.cos(phi)
-        y = center[1] + radius * np.sin(theta) * np.sin(phi)
-        z = center[2] + radius * np.cos(theta)
-        
-        fig.add_trace(go.Surface(
-            x=x, y=y, z=z,
-            opacity=sphere_opacity,
-            colorscale='Blues',
-            showscale=False,
-            name=f'Cavity {i+1} Sphere (r={radius:.4f})'
-        ))
-    
-    fig.update_layout(
-        title=f'Cavity Spheres - {len(cavity_centers)} cavities',
-        scene=dict(
-            xaxis_title='X',
-            yaxis_title='Y',
-            zaxis_title='Z',
-            aspectmode='data'
-        ),
-        margin=dict(l=0, r=0, b=0, t=40),
-        showlegend=True
-    )
-    
-    fig.show()
-
 def detect_clathrate_cavities(particles, shape_vertices=None, shape_color=None, 
                              grid_size=64, padding=0.1, cavity_threshold=0.5, 
                              min_cavity_size=10, simulation_data=None,
@@ -1622,7 +1372,7 @@ def analyze_clathrate_structure(particles, shape_vertices=None, shape_color=None
     }
 
 def plot_cavity_analysis(particles, shape_vertices=None, shape_color=None, 
-                         simulation_data=None, geometry_func=None, truncation_factor=None):
+                        simulation_data=None, geometry_func=None, truncation_factor=None):
     """
     Create comprehensive visualization of clathrate cavities with analysis.
     
@@ -1736,9 +1486,86 @@ def plot_cavity_analysis(particles, shape_vertices=None, shape_color=None,
     
     return analysis
 
+def voxelize_particles(particles, grid_size=64, padding=0.1, shape_vertices=None, shape_faces=None, geometry_func=None, truncation_factor=None):
+    """
+    Convert particle positions to a 3D voxel grid.
+    
+    Args:
+        particles: list of (position, quaternion) tuples
+        grid_size: number of voxels per dimension
+        padding: fraction of box size to pad on each side
+        shape_vertices: (N, 3) array of particle vertices
+        shape_faces: list of face indices
+        geometry_func: function to get geometry (default: None)
+        truncation_factor: truncation parameter (default: None)
+    Returns:
+        voxel_grid: 3D numpy array
+        grid_edges: (x_edges, y_edges, z_edges)
+    """
+    positions = np.array([pos for pos, _ in particles])
+    min_corner = positions.min(axis=0)
+    max_corner = positions.max(axis=0)
+    box_size = max_corner - min_corner
+    min_corner = min_corner - padding * box_size
+    max_corner = max_corner + padding * box_size
+    
+    # Compute voxel edges and centers
+    edges = [
+        np.linspace(min_corner[d], max_corner[d], grid_size + 1)
+        for d in range(3)
+    ]
+    centers = [0.5 * (edges[d][:-1] + edges[d][1:]) for d in range(3)]
+    voxel_grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)
+    
+    # For each particle, fill in the voxels inside the transformed shape
+    for pos, quat in particles:
+        # Use geometry_func if provided, else use shape_vertices
+        if geometry_func is not None:
+            if truncation_factor is not None:
+                verts, _, _ = geometry_func(shape_vertices, shape_faces, truncation_factor)
+            else:
+                verts, _, _ = geometry_func(shape_vertices, shape_faces)
+        else:
+            verts = shape_vertices
+        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        verts = r.apply(verts) + np.array(pos)
+        hull = ConvexHull(verts)
+        eqs = hull.equations
+        
+        # Get bounding box in grid coordinates
+        minv = verts.min(axis=0)
+        maxv = verts.max(axis=0)
+        idx_min = [np.searchsorted(centers[d], minv[d], side='left') for d in range(3)]
+        idx_max = [np.searchsorted(centers[d], maxv[d], side='right') for d in range(3)]
+        
+        # Clamp to grid
+        idx_min = [max(0, idx_min[d]) for d in range(3)]
+        idx_max = [min(grid_size, idx_max[d]) for d in range(3)]
+        
+        # Generate all voxel centers in bounding box
+        xs = centers[0][idx_min[0]:idx_max[0]]
+        ys = centers[1][idx_min[1]:idx_max[1]]
+        zs = centers[2][idx_min[2]:idx_max[2]]
+        XX, YY, ZZ = np.meshgrid(xs, ys, zs, indexing='ij')
+        pts = np.stack([XX, YY, ZZ], axis=-1).reshape(-1, 3)
+        
+        # Check all points at once
+        inside = np.all((eqs[:,:3] @ pts.T + eqs[:,3:]) <= 1e-8, axis=0)
+        
+        # Set all inside voxels to 1
+        idxs = np.argwhere(inside)
+        for flat_idx in idxs:
+            i = flat_idx[0] // (len(ys)*len(zs))
+            j = (flat_idx[0] // len(zs)) % len(ys)
+            k = flat_idx[0] % len(zs)
+            voxel_grid[idx_min[0]+i, idx_min[1]+j, idx_min[2]+k] = 1.0
+    
+    return voxel_grid, edges
+
+
 def find_central_cavity(particles, shape_vertices=None, shape_color=None, 
-                        grid_size=128, padding=0.15, simulation_data=None, 
-                        geometry_func=None, truncation_factor=None):
+                      grid_size=128, padding=0.15, simulation_data=None, 
+                      geometry_func=None, truncation_factor=None):
     """
     Find a cavity at the center of the object.
     
@@ -1821,84 +1648,6 @@ def find_central_cavity(particles, shape_vertices=None, shape_color=None,
     )
     
     return cavity_center, sphere_radius, sphere_volume
-
-def plot_cavity_cubes(particles, cavity_centers, cavity_radii, shape_vertices=None, 
-                     shape_color=None, show_particles=True, cube_opacity=0.3,
-                     cube_color='rgba(0,100,255,1)', simulation_data=None, 
-                     geometry_func=None, truncation_factor=None):
-    """
-    Plot cubic particles centered at cavity locations with sizes matching cavity radii.
-    The cube size is calculated to fit inside the spherical cavity, meaning the cube's
-    diagonal equals the sphere's diameter. This gives an edge length of 2r/√3 where
-    r is the cavity radius.
-    
-    Args:
-        particles: List of (position, quaternion) tuples
-        cavity_centers: List of cavity center coordinates
-        cavity_radii: List of cavity radii (will be used as cube sizes)
-        shape_vertices: numpy array of vertex coordinates from file
-        shape_color: color string from file
-        show_particles: Whether to show original particles
-        cube_opacity: Opacity of cavity cubes
-        cube_color: Color of the cubes (default: blue)
-        simulation_data: Dictionary containing simulation metadata
-        geometry_func: function to get geometry
-        truncation_factor: passed to geometry_func if not None
-    """
-    if geometry_func is None:
-        geometry_func = get_bipyramid_geometry
-    
-    fig = go.Figure()
-    
-    if show_particles:
-        # Plot original particles
-        if truncation_factor is not None and geometry_func == get_truncated_bipyramid_geometry:
-            vertices, faces, default_color = geometry_func(shape_vertices, shape_color, truncation_factor)
-        else:
-            vertices, faces, default_color = geometry_func(shape_vertices, shape_color)
-        
-        for pos, quat in particles:
-            trace = get_mesh_trace(pos, quat, vertices, faces, default_color)
-            if trace is not None:
-                fig.add_trace(trace)
-    
-    # Plot cavity cubes
-    for cavity_idx, (center, radius) in enumerate(zip(cavity_centers, cavity_radii)):
-        # Calculate cube edge length to fit inside sphere
-        # For a cube to fit in a sphere: diagonal = diameter
-        # cube_diagonal = edge_length * √3
-        # sphere_diameter = 2 * radius
-        # Therefore: edge_length = 2 * radius / √3
-        edge_length = 2 * radius / np.sqrt(3)
-        
-        # Create cube geometry with calculated size
-        vertices, faces = get_cube_geometry(center, size=edge_length)
-        
-        # Create mesh trace for cube
-        x, y, z = vertices[:, 0], vertices[:, 1], vertices[:, 2]
-        i_faces, j_faces, k_faces = zip(*faces)
-        
-        fig.add_trace(go.Mesh3d(
-            x=x, y=y, z=z,
-            i=i_faces, j=j_faces, k=k_faces,
-            opacity=cube_opacity,
-            color=cube_color,
-            name=f'Cavity {cavity_idx+1} Cube (edge={edge_length:.4f}, cavity_radius={radius:.4f})'
-        ))
-    
-    fig.update_layout(
-        title=f'Cavity Cubes - {len(cavity_centers)} cavities',
-        scene=dict(
-            xaxis_title='X',
-            yaxis_title='Y',
-            zaxis_title='Z',
-            aspectmode='data'
-        ),
-        margin=dict(l=0, r=0, b=0, t=40),
-        showlegend=True
-    )
-    
-    fig.show()
 
 # ============================================================================
 # MAIN EXECUTION

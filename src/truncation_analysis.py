@@ -15,7 +15,9 @@ from plotly.subplots import make_subplots
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import ConvexHull
 from clathrate_analysis import get_truncated_bipyramid_geometry, duplicate_unit_cell, get_mesh_trace, get_cell_color
-    
+import matplotlib.pyplot as plt
+import pandas as pd
+from clathrate_analysis import detect_clathrate_cavities, get_truncated_bipyramid_geometry
 
 def get_truncated_bipyramid_volume_surface(truncation_factor):
     """
@@ -312,8 +314,6 @@ def plot_saxs_comparison(base_path, truncation_factors=[0.0, 0.2, 0.4, 0.6, 0.8,
         base_path: Base path for SAXS data files
         truncation_factors: List of truncation parameters to plot
     """
-    import matplotlib.pyplot as plt
-    import pandas as pd
     
     plt.figure(figsize=(10,6))
 
@@ -341,6 +341,54 @@ def plot_saxs_comparison(base_path, truncation_factors=[0.0, 0.2, 0.4, 0.6, 0.8,
     plt.grid(True)
     plt.show()
 
+
+def plot_saxs_comparison_cavities_cubes(base_path, truncation_factor):
+    """
+    Plot SAXS profiles for different truncation values.
+    
+    Args:
+        base_path: Base path for SAXS data files
+        truncation_factors: List of truncation parameters to plot
+    """
+    plt.figure(figsize=(10,6))
+
+    # Read data with space separator and custom column names
+    filename = f'{base_path}/truncated_t{truncation_factor}_bipyramid_tomogram_spherical_avg.dat'
+    try:
+        data = pd.read_csv(
+            filename,
+            delim_whitespace=True,
+            skiprows=1,
+            names=['q', 'Calculated']
+        )
+        
+        plt.plot(data['q'], data['Calculated'], label=f'Empty Cavities')
+    except FileNotFoundError:
+        print(f"Warning: File {filename} not found, skipping...")
+        
+    filename = f'{base_path}/truncated_t{truncation_factor}_bipyramid_tomogram_with_cubes_spherical_avg.dat'
+    try:
+        data = pd.read_csv(
+            filename,
+            delim_whitespace=True,
+            skiprows=1,
+            names=['q', 'Calculated']
+        )
+        
+        plt.plot(data['q'], data['Calculated'], label=f'Cubic Cavities')
+    except FileNotFoundError:
+        print(f"Warning: File {filename} not found, skipping...")
+
+    plt.xlabel('q')
+    plt.xlim(0,3.0)
+    plt.ylabel('Calculated')
+    plt.title('SAXS Profiles with and without cubic cavities (truncation={truncation_factor})')
+    plt.legend()
+    plt.yscale('log')
+    plt.grid(True)
+    plt.show()
+
+
 def plot_truncation_cavity_comparison(particles, shape_vertices=None, shape_color=None, 
                                      truncation_factors=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
                                      simulation_data=None):
@@ -354,7 +402,7 @@ def plot_truncation_cavity_comparison(particles, shape_vertices=None, shape_colo
         truncation_factors: list of truncation parameters to compare
         simulation_data: Dictionary containing simulation metadata
     """
-    from show_model_clean import detect_clathrate_cavities, get_truncated_bipyramid_geometry
+
     
     # Collect data for each truncation level
     cavity_counts = []
