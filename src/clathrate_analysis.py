@@ -1650,6 +1650,242 @@ def find_central_cavity(particles, shape_vertices=None, shape_color=None,
     return cavity_center, sphere_radius, sphere_volume
 
 # ============================================================================
+# FFT ANALYSIS FUNCTIONS
+# ============================================================================
+
+def create_2d_projections(voxel_grid, projection_type='sum'):
+    """
+    Create 2D projections of the 3D voxel grid.
+    Args:
+        voxel_grid: 3D numpy array
+        projection_type: 'sum', 'max', or 'mean'
+    Returns:
+        projections: dict with keys 'xy', 'xz', 'yz'
+    """
+    if projection_type == 'sum':
+        xy_proj = np.sum(voxel_grid, axis=2)
+        xz_proj = np.sum(voxel_grid, axis=1)
+        yz_proj = np.sum(voxel_grid, axis=0)
+    elif projection_type == 'max':
+        xy_proj = np.max(voxel_grid, axis=2)
+        xz_proj = np.max(voxel_grid, axis=1)
+        yz_proj = np.max(voxel_grid, axis=0)
+    elif projection_type == 'mean':
+        xy_proj = np.mean(voxel_grid, axis=2)
+        xz_proj = np.mean(voxel_grid, axis=1)
+        yz_proj = np.mean(voxel_grid, axis=0)
+    else:
+        raise ValueError("projection_type must be 'sum', 'max', or 'mean'")
+    
+    return {'xy': xy_proj, 'xz': xz_proj, 'yz': yz_proj}
+
+def compute_2d_fft(projection):
+    """
+    Compute 2D FFT of a projection.
+    Args:
+        projection: 2D numpy array
+    Returns:
+        fft_mag: 2D array of FFT magnitude
+        kx, ky: frequency arrays
+    """
+    fft_2d = np.fft.fft2(projection)
+    fft_mag = np.abs(np.fft.fftshift(fft_2d))
+    
+    # Get frequency arrays
+    nx, ny = projection.shape
+    kx = np.fft.fftshift(np.fft.fftfreq(nx))
+    ky = np.fft.fftshift(np.fft.fftfreq(ny))
+    
+    return fft_mag, kx, ky
+
+def create_projection_heatmap(projection, title, projection_type='sum', colorbar_x=1.1, colorbar_y=0.5):
+    """
+    Create a heatmap trace for a 2D projection.
+    Args:
+        projection: 2D numpy array
+        title: title for the plot
+        projection_type: type of projection for colorbar label
+        colorbar_x: x position of colorbar
+        colorbar_y: y position of colorbar
+    Returns:
+        go.Heatmap trace
+    """
+    return go.Heatmap(
+        z=projection,
+        colorscale='Viridis',
+        showscale=True
+    )
+
+def create_fft_heatmap(projection, log_scale=True, threshold=0.1, colorbar_x=1.1, colorbar_y=0.5):
+    """
+    Create a heatmap trace for a 2D FFT.
+    Args:
+        projection: 2D numpy array
+        log_scale: whether to plot log10(magnitude)
+        threshold: fraction of max to threshold for visualization
+        colorbar_x: x position of colorbar
+        colorbar_y: y position of colorbar
+    Returns:
+        go.Heatmap trace
+    """
+    fft_mag, kx, ky = compute_2d_fft(projection)
+    
+    if log_scale:
+        fft_mag = np.log10(fft_mag + 1e-6)
+    
+    # Threshold for visualization
+    vmax = fft_mag.max()
+    mask = fft_mag > (threshold * vmax)
+    fft_mag[~mask] = 0
+    
+    return go.Heatmap(
+        z=fft_mag,
+        x=kx,
+        y=ky,
+        colorscale='Viridis',
+        showscale=True
+    )
+
+def plot_projections_with_ffts(projections, log_scale=True, threshold=0.1):
+    """
+    Plot original 2D projections alongside their corresponding FFTs.
+    Args:
+        projections: dict with 'xy', 'xz', 'yz' keys
+        log_scale: whether to plot log10(magnitude) for FFTs
+        threshold: fraction of max to threshold for FFT visualization
+    """
+    fig = make_subplots(
+        rows=2, cols=3,
+        subplot_titles=[
+            'XY Projection', 'XZ Projection', 'YZ Projection',
+            'XY Projection FFT', 'XZ Projection FFT', 'YZ Projection FFT'
+        ],
+        specs=[[{'type': 'heatmap'}, {'type': 'heatmap'}, {'type': 'heatmap'}],
+               [{'type': 'heatmap'}, {'type': 'heatmap'}, {'type': 'heatmap'}]]
+    )
+    
+    for i, (plane, proj) in enumerate(projections.items()):
+        # Plot original projection (top row)
+        projection_trace = create_projection_heatmap(
+            proj, f'{plane.upper()} Projection', 'sum', 
+            colorbar_x=0.15 + i*0.25, colorbar_y=0.5
+        )
+        fig.add_trace(projection_trace, row=1, col=i+1)
+        
+        # Plot FFT (bottom row)
+        fft_trace = create_fft_heatmap(
+            proj, log_scale, threshold,
+            colorbar_x=0.15 + i*0.25, colorbar_y=0.0
+        )
+        fig.add_trace(fft_trace, row=2, col=i+1)
+    
+    fig.update_layout(
+        title='2D Projections and Their FFTs',
+        height=800,
+        width=1200,
+        showlegend=False
+    )
+    fig.show()
+
+def plot_individual_projection(projection, title, projection_type='sum'):
+    """
+    Plot a single 2D projection with its own colorbar.
+    Args:
+        projection: 2D numpy array
+        title: title for the plot
+        projection_type: type of projection for colorbar label
+    """
+    fig = go.Figure(data=create_projection_heatmap(projection, title, projection_type))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='X',
+        yaxis_title='Y',
+        margin=dict(l=0, r=100, b=0, t=40),  # Increased right margin for colorbar
+        height=500,
+        width=600
+    )
+    fig.show()
+
+def plot_individual_fft(projection, title, log_scale=True, threshold=0.1):
+    """
+    Plot a single 2D FFT with its own colorbar.
+    Args:
+        projection: 2D numpy array
+        title: title for the plot
+        log_scale: whether to plot log10(magnitude)
+        threshold: fraction of max to threshold for visualization
+    """
+    fig = go.Figure(data=create_fft_heatmap(projection, log_scale, threshold))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='kx',
+        yaxis_title='ky',
+        margin=dict(l=0, r=100, b=0, t=40),  # Increased right margin for colorbar
+        height=500,
+        width=600
+    )
+    fig.show()
+
+def plot_fft_magnitude(voxel_grid, edges, log_scale=True, threshold=0.1):
+    """
+    Plot the magnitude of the 3D FFT of the voxel grid.
+    Args:
+        voxel_grid: 3D numpy array
+        edges: (x_edges, y_edges, z_edges)
+        log_scale: whether to plot log10(magnitude)
+        threshold: fraction of max to threshold for visualization
+    """
+    fft_grid = np.fft.fftn(voxel_grid)
+    fft_mag = np.abs(np.fft.fftshift(fft_grid))
+    if log_scale:
+        fft_mag = np.log10(fft_mag + 1e-6)
+    
+    # Threshold for visualization
+    vmax = fft_mag.max()
+    mask = fft_mag > (threshold * vmax)
+    
+    # Get coordinates
+    grid_shape = fft_mag.shape
+    kx = np.fft.fftshift(np.fft.fftfreq(grid_shape[0]))
+    ky = np.fft.fftshift(np.fft.fftfreq(grid_shape[1]))
+    kz = np.fft.fftshift(np.fft.fftfreq(grid_shape[2]))
+    KX, KY, KZ = np.meshgrid(kx, ky, kz, indexing='ij')
+    
+    # Only plot points above threshold
+    x, y, z, val = KX[mask], KY[mask], KZ[mask], fft_mag[mask]
+    
+    fig = go.Figure(data=[go.Scatter3d(
+        x=x.flatten(), y=y.flatten(), z=z.flatten(),
+        mode='markers',
+        marker=dict(
+            size=3, 
+            color=val, 
+            colorscale='Viridis', 
+            opacity=0.7,
+            showscale=True,
+            colorbar=dict(
+                title='FFT Magnitude',
+                x=1.1,
+                len=0.8,
+                thickness=20
+            )
+        ),
+        text=[f"{v:.2f}" for v in val.flatten()]
+    )])
+    fig.update_layout(
+        scene=dict(
+            xaxis_title='kx', yaxis_title='ky', zaxis_title='kz',
+            aspectmode='cube',
+        ),
+        title='3D FFT Magnitude (Structure Factor)',
+        margin=dict(l=0, r=100, b=0, t=40),  # Increased right margin for colorbar
+        showlegend=False
+    )
+    fig.show()
+
+# ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 

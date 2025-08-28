@@ -113,7 +113,7 @@ def create_tomogram_from_particles(particles, grid_size=128, padding=0.1, shape_
     # Save as TIFF
     save_voxel_grid_as_tiff(voxel_grid, filename, pixel_size)
     
-    return filename
+    return filename,voxel_grid
 
 def create_tomogram_with_cavity_objects(particles, cavity_centers, cavity_radii, 
                                   grid_size=128, padding=0.1, shape_vertices=None, shape_faces=None,

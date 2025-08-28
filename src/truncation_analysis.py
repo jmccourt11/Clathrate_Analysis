@@ -323,7 +323,8 @@ def plot_saxs_comparison(base_path, truncation_factors=[0.0, 0.2, 0.4, 0.6, 0.8,
         try:
             data = pd.read_csv(
                 filename,
-                delim_whitespace=True,
+                #delim_whitespace=True,
+                sep=r'\s+',
                 skiprows=1,
                 names=['q', 'Calculated']
             )
@@ -357,7 +358,8 @@ def plot_saxs_comparison_cavities_cubes(base_path, truncation_factor):
     try:
         data = pd.read_csv(
             filename,
-            delim_whitespace=True,
+            #delim_whitespace=True,
+            sep=r'\s+',
             skiprows=1,
             names=['q', 'Calculated']
         )
@@ -370,7 +372,8 @@ def plot_saxs_comparison_cavities_cubes(base_path, truncation_factor):
     try:
         data = pd.read_csv(
             filename,
-            delim_whitespace=True,
+            #delim_whitespace=True,
+            sep=r'\s+',
             skiprows=1,
             names=['q', 'Calculated']
         )
