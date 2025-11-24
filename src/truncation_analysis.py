@@ -161,7 +161,7 @@ def plot_truncated_particle(pos, quat, shape_vertices=None, shape_color=None,
         fig.add_trace(go.Mesh3d(
             x=x, y=y, z=z,
             i=i, j=j, k=k,
-            opacity=0.8,
+            opacity=0.4,
             color=default_color,
             flatshading=True,
             showscale=False,
@@ -253,6 +253,7 @@ def plot_truncated_particle(pos, quat, shape_vertices=None, shape_color=None,
     )
     
     fig.show()
+    return fig
 
 def plot_particles_with_truncation(particles, shape_vertices=None, shape_color=None, truncation_factor=0.3, 
                                  nx=1, ny=1, nz=1, show_duplicated=True, color_by_cell=False, simulation_data=None):

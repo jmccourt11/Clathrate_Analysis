@@ -1,3 +1,4 @@
+#%%
 #!/usr/bin/env python3
 """
 Quick Spherical Tomogram Creator
@@ -80,73 +81,198 @@ def create_synthetic_spheres(n=27):
     
     return particles
 
-def main():
-    """
-    Main function with command line interface
-    """
-    parser = argparse.ArgumentParser(description='Create spherical particle tomograms quickly')
-    parser.add_argument('particle_file', nargs='?', help='Particle data file (.pos)')
-    parser.add_argument('--radius', '-r', type=float, default=0.15, help='Sphere radius (default: 0.15)')
-    parser.add_argument('--grid-size', '-g', type=int, default=64, help='Grid size (default: 64)')
-    parser.add_argument('--output', '-o', default='quick_spherical.tif', help='Output filename (default: quick_spherical.tif)')
-    parser.add_argument('--no-plot', action='store_true', help='Skip visualization')
-    parser.add_argument('--synthetic', '-s', type=int, help='Create N synthetic particles instead of loading file')
+# #%%
+# def main():
+#     """
+#     Main function with command line interface
+#     """
+#     parser = argparse.ArgumentParser(description='Create spherical particle tomograms quickly')
+#     parser.add_argument('particle_file', nargs='?', help='Particle data file (.pos)')
+#     parser.add_argument('--radius', '-r', type=float, default=0.15, help='Sphere radius (default: 0.15)')
+#     parser.add_argument('--grid-size', '-g', type=int, default=64, help='Grid size (default: 64)')
+#     parser.add_argument('--output', '-o', default='quick_spherical.tif', help='Output filename (default: quick_spherical.tif)')
+#     parser.add_argument('--no-plot', action='store_true', help='Skip visualization')
+#     parser.add_argument('--synthetic', '-s', type=int, help='Create N synthetic particles instead of loading file')
     
-    args = parser.parse_args()
+#     args = parser.parse_args()
     
-    print("="*50)
-    print("QUICK SPHERICAL TOMOGRAM CREATOR")
-    print("="*50)
+#     print("="*50)
+#     print("QUICK SPHERICAL TOMOGRAM CREATOR")
+#     print("="*50)
     
-    # Load or create particles
-    if args.synthetic:
-        print(f"Creating {args.synthetic} synthetic particles...")
-        particles = create_synthetic_spheres(args.synthetic)
-    elif args.particle_file and os.path.exists(args.particle_file):
-        print(f"Loading particles from: {args.particle_file}")
-        particles, _, _, _ = parse_particles_and_shape(args.particle_file)
-    else:
-        print("Creating default synthetic particles...")
-        particles = create_synthetic_spheres(27)
+#     # Load or create particles
+#     if args.synthetic:
+#         print(f"Creating {args.synthetic} synthetic particles...")
+#         particles = create_synthetic_spheres(args.synthetic)
+#     elif args.particle_file and os.path.exists(args.particle_file):
+#         print(f"Loading particles from: {args.particle_file}")
+#         particles, _, _, _ = parse_particles_and_shape(args.particle_file)
+#     else:
+#         print("Creating default synthetic particles...")
+#         particles = create_synthetic_spheres(27)
     
-    print(f"Using {len(particles)} particles")
-    print(f"Sphere radius: {args.radius}")
-    print(f"Grid size: {args.grid_size}³ = {args.grid_size**3:,} voxels")
+#     print(f"Using {len(particles)} particles")
+#     print(f"Sphere radius: {args.radius}")
+#     print(f"Grid size: {args.grid_size}³ = {args.grid_size**3:,} voxels")
     
-    # Create voxel grid
-    print("Voxelizing particles...")
-    import time
-    start_time = time.time()
+#     # Create voxel grid
+#     print("Voxelizing particles...")
+#     import time
+#     start_time = time.time()
     
-    voxel_grid = quick_spherical_voxelization(
-        particles, 
-        grid_size=args.grid_size, 
-        sphere_radius=args.radius
-    )
+#     voxel_grid = quick_spherical_voxelization(
+#         particles, 
+#         grid_size=args.grid_size, 
+#         sphere_radius=args.radius
+#     )
     
-    elapsed = time.time() - start_time
-    filled_voxels = np.sum(voxel_grid > 0)
+#     elapsed = time.time() - start_time
+#     filled_voxels = np.sum(voxel_grid > 0)
     
-    print(f"Voxelization completed in {elapsed:.2f} seconds")
-    print(f"Filled {filled_voxels:,} voxels ({filled_voxels/voxel_grid.size:.1%})")
+#     print(f"Voxelization completed in {elapsed:.2f} seconds")
+#     print(f"Filled {filled_voxels:,} voxels ({filled_voxels/voxel_grid.size:.1%})")
     
-    # Save tomogram
-    print(f"Saving tomogram: {args.output}")
-    save_voxel_grid_as_tiff(voxel_grid, args.output, pixel_size=1.0)
+#     # Save tomogram
+#     print(f"Saving tomogram: {args.output}")
+#     save_voxel_grid_as_tiff(voxel_grid, args.output, pixel_size=1.0)
     
-    # Visualize (unless disabled)
-    if not args.no_plot:
-        print("Creating visualization...")
-        plot_3d_tomogram(args.output, plot_type='isosurface', threshold=0.5)
+#     # Visualize (unless disabled)
+#     if not args.no_plot:
+#         print("Creating visualization...")
+#         plot_3d_tomogram(args.output, plot_type='isosurface', threshold=0.5)
     
-    print(f"\nDone! Tomogram saved as: {args.output}")
+#     print(f"\nDone! Tomogram saved as: {args.output}")
     
-    # Print usage statistics
-    memory_mb = voxel_grid.nbytes / (1024**2)
-    print(f"\nStatistics:")
-    print(f"  Processing time: {elapsed:.2f} seconds")
-    print(f"  Memory usage: {memory_mb:.1f} MB")
-    print(f"  Voxelization rate: {filled_voxels/elapsed:.0f} voxels/sec")
+#     # Print usage statistics
+#     memory_mb = voxel_grid.nbytes / (1024**2)
+#     print(f"\nStatistics:")
+#     print(f"  Processing time: {elapsed:.2f} seconds")
+#     print(f"  Memory usage: {memory_mb:.1f} MB")
+#     print(f"  Voxelization rate: {filled_voxels/elapsed:.0f} voxels/sec")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
+
+
+#%%
+# Jupyter cell: 800^3 tomogram of 24x24x24 simple-cubic spheres
+
+import os, sys, time
+import numpy as np
+from pathlib import Path
+
+# Make repo 'src' importable
+repo_root = Path().resolve()
+sys.path.insert(0, str(repo_root / "src"))
+
+from tomogram_utils import save_voxel_grid_as_tiff
+
+def generate_sc_particles(n_per_dim: int, spacing: float = 1.0):
+    # Centered simple cubic lattice with 1 particle per cell
+    offset = (n_per_dim - 1) * spacing / 2.0
+    coords = np.arange(n_per_dim, dtype=np.float32) * spacing - offset
+    particles = []
+    for x in coords:
+        for y in coords:
+            for z in coords:
+                particles.append(((float(x), float(y), float(z)), (1.0, 0.0, 0.0, 0.0)))
+    return particles
+
+def voxelize_spheres_local(particles, grid_size: int, sphere_radius: float, padding_fraction: float):
+    # Compute bounds
+    positions = np.array([p[0] for p in particles], dtype=np.float32)
+    min_corner = positions.min(axis=0)
+    max_corner = positions.max(axis=0)
+    box_size = max_corner - min_corner
+    min_corner = min_corner - padding_fraction * box_size
+    max_corner = max_corner + padding_fraction * box_size
+
+    # Edges/centers
+    x_edges = np.linspace(min_corner[0], max_corner[0], grid_size + 1, dtype=np.float32)
+    y_edges = np.linspace(min_corner[1], max_corner[1], grid_size + 1, dtype=np.float32)
+    z_edges = np.linspace(min_corner[2], max_corner[2], grid_size + 1, dtype=np.float32)
+    x_centers = (x_edges[:-1] + x_edges[1:]) * 0.5
+    y_centers = (y_edges[:-1] + y_edges[1:]) * 0.5
+    z_centers = (z_edges[:-1] + z_edges[1:]) * 0.5
+
+    voxel_grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.float32)  # (Z,Y,X)
+    r = np.float32(sphere_radius)
+    r2 = np.float32(r * r)
+
+    start = time.time()
+    n = len(particles)
+    for idx, (pos, _) in enumerate(particles, 1):
+        cx, cy, cz = map(np.float32, pos)
+
+        # Find index ranges that can be inside the sphere
+        xi0 = max(0, int(np.searchsorted(x_centers, cx - r, side='left')))
+        xi1 = min(grid_size, int(np.searchsorted(x_centers, cx + r, side='right')))
+        yi0 = max(0, int(np.searchsorted(y_centers, cy - r, side='left')))
+        yi1 = min(grid_size, int(np.searchsorted(y_centers, cy + r, side='right')))
+        zi0 = max(0, int(np.searchsorted(z_centers, cz - r, side='left')))
+        zi1 = min(grid_size, int(np.searchsorted(z_centers, cz + r, side='right')))
+
+        if xi0 >= xi1 or yi0 >= yi1 or zi0 >= zi1:
+            continue
+
+        dx2 = (x_centers[xi0:xi1].astype(np.float32) - cx) ** 2
+        dy2 = (y_centers[yi0:yi1].astype(np.float32) - cy) ** 2
+        dz2 = (z_centers[zi0:zi1].astype(np.float32) - cz) ** 2
+
+        # Broadcasting sum of squared distances
+        dist2 = dx2[None, None, :] + dy2[None, :, None] + dz2[:, None, None]  # (Z,Y,X) local block
+        mask = dist2 <= r2
+
+        # Assign into main grid (ensure (Z,Y,X) indexing)
+        voxel_grid[zi0:zi1, yi0:yi1, xi0:xi1][mask] = 1.0
+
+        # Lightweight progress print for long runs
+        if idx % 1000 == 0 or idx == n:
+            elapsed = time.time() - start
+            print(f"Filled {idx}/{n} spheres ({idx/n:.1%}) in {elapsed:.1f}s")
+
+    return voxel_grid
+
+# Parameters
+grid_size = 800              # 800x800x800
+cells_per_dim = 96           # 24x24x24 simple cubic
+spacing_units = 1.0          # lattice spacing in world units
+sphere_radius_units = 0.5   # must be < spacing/2; 0.45 leaves a small gap
+positions_range = (cells_per_dim - 1) * spacing_units
+# Padding fraction in terms of box length so spheres at borders aren't cut
+padding_fraction = min(0.1, max(0.01, (sphere_radius_units / positions_range) + 0.002))
+
+print("Generating particles...")
+particles = generate_sc_particles(cells_per_dim, spacing=spacing_units)
+print(f"Particles: {len(particles)}")
+
+print("Voxelizing (this is compute/memory intensive; voxel grid ~2.0 GB float32)...")
+vox = voxelize_spheres_local(
+    particles=particles,
+    grid_size=grid_size,
+    sphere_radius=sphere_radius_units,
+    padding_fraction=padding_fraction
+)
+
+print("Saving TIFF...")
+out_file = f"sc{cells_per_dim}_spheres_{grid_size}.tif"
+save_voxel_grid_as_tiff(vox, out_file, pixel_size=1.0)
+print(f"Done: {out_file}")
+
+#%%
+# Optional: quick sanity check slice (avoid 3D rendering on an 800^3 volume)
+import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+mid = grid_size // 2
+fig,ax = plt.subplots(1,2,figsize=(12,6)); 
+ax[0].imshow(vox[cells_per_dim//2,:,:],cmap='gray'); 
+# Create vignette mask
+y, x = np.ogrid[-mid:mid, -mid:mid]
+r = np.sqrt(x*x + y*y)
+vignette = np.clip(1 - r/mid, 0, 1)
+# Apply vignette and compute FFT
+slice_with_vignette = vox[cells_per_dim//2,:,:] * vignette
+ax[1].imshow(np.abs(np.fft.fftshift(np.fft.fft2(slice_with_vignette)))**2, cmap='jet', norm=colors.LogNorm());
+plt.axis('off'); 
+plt.show()
+# %%

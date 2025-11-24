@@ -47,8 +47,8 @@ def example_1_basic_particle_tomogram(filename=None):
     # Use default file if none provided
     if filename is None:
         # You can replace this with your actual file path
-        #filename = 'C:\\Users\\b304014\\Software\\blee\\models\\ClaS_bipyramid_averaged.pos'  # Replace with actual file
-        filename = "C:\\Users\\b304014\\Box\\zhihua\\models\\Right bipyramids ClaIV_cubic_bipyra_UC.pos"
+        filename = 'C:\\Users\\b304014\\Software\\blee\\models\\ClaS_bipyramid_averaged.pos'  # Replace with actual file
+        #filename = "C:\\Users\\b304014\\Box\\zhihua\\models\\Right bipyramids ClaIV_cubic_bipyra_UC.pos"
         print(f"Using example file: {filename}")
         
         # If the file doesn't exist, create some example data
@@ -65,18 +65,18 @@ def example_1_basic_particle_tomogram(filename=None):
     print(f"Loaded {len(particles)} particles")
     
     
-    duplicated_particles = duplicate_unit_cell(particles, nx=12, ny=12, nz=12, simulation_data=simulation_data)
+    duplicated_particles = duplicate_unit_cell(particles, nx=4, ny=4, nz=4, simulation_data=simulation_data)
     duplicated_positions = [(pos, quat) for pos, quat, _ in duplicated_particles]
     
     # Create tomogram
     print("\nCreating tomogram from particles...")
     tomogram_filename, voxel_grid = create_tomogram_from_particles(
         particles=duplicated_positions,
-        grid_size=800,
+        grid_size=128,
         padding=0.1,
         shape_vertices=shape_vertices,
         pixel_size=1.0,
-        filename="basic_particle_tomogram_800x800x800_12x12x12unitcells_RBP.tif"
+        filename="ClaS_tomogram_128x128x128_4x4x4unitcells.tif"
     )
     
     print(f"Tomogram saved as: {tomogram_filename}")
