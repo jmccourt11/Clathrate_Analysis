@@ -5,8 +5,6 @@ Particle Visualization and Analysis Module
 This module provides tools for visualizing and analyzing 3D particle assemblies,
 particularly triangular bipyramids and clathrate structures.
 
-Author: [Your Name]
-Date: [Current Date]
 """
 
 import numpy as np

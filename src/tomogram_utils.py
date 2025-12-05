@@ -4,8 +4,6 @@ Tomogram and TIFF Utilities Module
 This module provides functions for creating, saving, loading, and visualizing
 3D tomograms from particle assemblies.
 
-Author: [Your Name]
-Date: [Current Date]
 """
 
 import numpy as np

@@ -5,8 +5,6 @@ Truncation Analysis Module
 This module provides functions for analyzing truncated triangular bipyramids,
 including volume/surface area calculations and visualization.
 
-Author: [Your Name]
-Date: [Current Date]
 """
 
 import numpy as np
